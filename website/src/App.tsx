@@ -1,4 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { ComplianceGate } from "./ComplianceGate";
+import { useWritingAttention } from "./useWritingAttention"; 
 
 /*
   Prolific User Study Skeleton (TypeScript/React, single-file)
@@ -19,6 +21,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
   Group keys: "AI-DIV", "AI-CONV", "SELF-DIV", "SELF-CONV"
 */
+
+// Development mode - set to true to disable all timers for faster development
+const DEV_MODE = false;
 
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
@@ -114,6 +119,11 @@ interface SessionMeta {
 // ---- Shared Containers ----
 const Shell: React.FC<{ title: string; children: React.ReactNode; footer?: React.ReactNode }>=({ title, children, footer }) => (
   <div className="min-h-screen bg-gray-50 text-gray-900">
+    {DEV_MODE && (
+      <div className="bg-red-100 border-b-2 border-red-500 text-red-700 px-4 py-2 text-center font-semibold">
+        🚧 DEVELOPMENT MODE - All timers disabled
+      </div>
+    )}
     <div className="max-w-5xl mx-auto px-4 py-6">
       <header className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">{title}</h1>
@@ -133,13 +143,13 @@ const InstructionsView: React.FC<{ meta: SessionMeta; onNext: () => void }>=({ m
   const [attempts, setAttempts] = useState(0);
   const [showError, setShowError] = useState(false);
   const [showFinalError, setShowFinalError] = useState(false);
-  const [timeRemaining, setTimeRemaining] = useState(15); // 15 second timer
+  const [timeRemaining, setTimeRemaining] = useState(DEV_MODE ? 0 : 15); // 15 second timer
 
   const correctAnswer = meta.group.includes("SELF") ? "zero_tolerance" : "ai_when_provided";
 
   // Timer effect
   React.useEffect(() => {
-    if (timeRemaining > 0) {
+    if (!DEV_MODE && timeRemaining > 0) {
       const timer = setTimeout(() => setTimeRemaining(prev => prev - 1), 1000);
       return () => clearTimeout(timer);
     }
@@ -159,7 +169,11 @@ const InstructionsView: React.FC<{ meta: SessionMeta; onNext: () => void }>=({ m
       if (attempts < 1) {
         setAttempts(prev => prev + 1);
         setShowError(true);
-        setTimeout(() => setShowError(false), 5000);
+        if (!DEV_MODE) {
+          setTimeout(() => setShowError(false), 5000);
+        } else {
+          setShowError(false); // Immediately hide error in dev mode
+        }
       } else {
         setShowFinalError(true);
       }
@@ -301,12 +315,12 @@ const InstructionsView: React.FC<{ meta: SessionMeta; onNext: () => void }>=({ m
 
 // ---- View 2: Brainstorm ----
 const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: string; setValue: (s: string)=>void }>=({ onNext, meta, value, setValue }) => {
-  const [timeRemaining, setTimeRemaining] = React.useState(150); // 5 minutes in seconds
+  const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 150); // 5 minutes in seconds
   const [showConfirmation, setShowConfirmation] = React.useState(false);
   const [showReminder, setShowReminder] = React.useState<false | '2min' | '30sec'>(false);
 
   React.useEffect(() => {
-    if (timeRemaining > 0) {
+    if (!DEV_MODE && timeRemaining > 0) {
       const timer = setTimeout(() => {
         setTimeRemaining(prev => {
           const newTime = prev - 1;
@@ -322,8 +336,8 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
         });
       }, 1000);
       return () => clearTimeout(timer);
-    } else {
-      onNext(); // Force proceed when time is up
+    } else if (!DEV_MODE && timeRemaining === 0) {
+      onNext(); // Force proceed when time is up (only in production)
     }
   }, [timeRemaining]);
 
@@ -408,14 +422,14 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
 // ---- New View: Prompt ----
 const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta, onNext }) => {
   const isDiv = meta.group.includes("DIV");
-  const [timeRemaining, setTimeRemaining] = React.useState(15);
+  const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 15);
   const [showAttentionCheck, setShowAttentionCheck] = React.useState(false);
   const [selectedOption, setSelectedOption] = React.useState<string | null>(null);
   const [showWarning, setShowWarning] = React.useState(false);
   const correctAnswer = isDiv ? "originality" : "grade";
 
   React.useEffect(() => {
-    if (timeRemaining > 0) {
+    if (!DEV_MODE && timeRemaining > 0) {
       const timer = setTimeout(() => setTimeRemaining(prev => prev - 1), 1000);
       return () => clearTimeout(timer);
     }
@@ -466,8 +480,8 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
 
           </tbody>
         </table>
-        <div className="my-30"></div>
-        <p className="text-sm text-gray-500 italic">
+        <div className="my-10"></div>
+        <p className="mb-2 text-gray-500 italic">
           In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After 30 seconds of inactivity, your story will be automatically submitted.
         </p>
       </>
@@ -501,8 +515,8 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
 
           </tbody>
         </table>
-        <div className="my-30"></div>
-        <p className="text-sm text-gray-500 italic">
+        <div className="my-10"></div>
+        <p className="mb-2 text-gray-500 italic">
           In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After 30 seconds of inactivity, your story will be automatically submitted.
         </p>
         
@@ -639,7 +653,7 @@ const EditorView: React.FC<{
   const [aiMessages, setAiMessages] = useState<{role:"user"|"assistant"; content:string}[]>([]);
   const [keys, setKeys] = useState<{t:string; k:string}[]>([]);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
-  const [timeRemaining, setTimeRemaining] = useState(20 * 60); // 20 minutes in seconds
+  const [timeRemaining, setTimeRemaining] = useState(DEV_MODE ? 0 : 20 * 60); // 20 minutes in seconds
   const [showReminder, setShowReminder] = useState<false | '5min' | '1min'>(false);
   const [wordCount, setWordCount] = useState(0);
   const [showConfirmation, setShowConfirmation] = useState(false);
@@ -652,7 +666,7 @@ const EditorView: React.FC<{
 
   // Timer effect
   React.useEffect(() => {
-    if (timeRemaining > 0) {
+    if (!DEV_MODE && timeRemaining > 0) {
       const timer = setTimeout(() => {
         setTimeRemaining(prev => {
           const newTime = prev - 1;
@@ -668,8 +682,8 @@ const EditorView: React.FC<{
         });
       }, 1000);
       return () => clearTimeout(timer);
-    } else {
-      onNext(text, aiMessages); // Force proceed when time is up
+    } else if (!DEV_MODE && timeRemaining === 0) {
+      onNext(text, aiMessages); // Force proceed when time is up (only in production)
     }
   }, [timeRemaining]);
 
@@ -694,7 +708,9 @@ const EditorView: React.FC<{
     // Placeholder: append user message and a fake assistant reply
     setAiMessages((msgs)=>[...msgs, { role:"user", content: message }]);
     // ---- Replace below with your API call ----
-    await new Promise((r)=>setTimeout(r, 300));
+    if (!DEV_MODE) {
+      await new Promise((r)=>setTimeout(r, 300));
+    }
     setAiMessages((msgs)=>[...msgs, { role:"assistant", content: "[placeholder] API not connected yet. Your note: " + message }]);
   };
 
@@ -813,7 +829,7 @@ const EditorView: React.FC<{
 };
 
 // ---- View 4: Survey ----
-const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }>=({ meta, onSubmit })=>{
+const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }>=({ meta: _meta, onSubmit })=>{
   const [q1, setQ1] = useState("");
   const [q2, setQ2] = useState("");
   const [q3, setQ3] = useState("");
@@ -861,6 +877,16 @@ const StudyApp: React.FC = () => {
   const [brainstorm, setBrainstorm] = useState("");
   const [finalText, setFinalText] = useState("");
   const [aiTranscript, setAiTranscript] = useState<{role:"user"|"assistant"; content:string}[]>([]);
+  const [attentionMeta, setAttentionMeta] = useState<any>(null);
+
+  // Attention tracking for editor step only
+  const attn = useWritingAttention(step === 4, {
+    graceMs: 3000,
+    halfLifeMs: 12000,
+    nudgeThreshold: 0.5,
+    finalThreshold: 0.35,
+    maxNudges: 2,
+  });
 
   // Boot: capture prolific id, assign group
   useEffect(() => {
@@ -887,6 +913,7 @@ const StudyApp: React.FC = () => {
       finalText,
       aiTranscript,
       survey,
+      attentionMeta, // Include attention tracking data
       finishedAt: todayISO(),
     };
     console.log("[SUBMIT] session payload", payload);
@@ -915,11 +942,96 @@ const StudyApp: React.FC = () => {
     <div className="min-h-screen">
       {step === 1 && <InstructionsView meta={meta} onNext={()=> setStep(2)} />}
       {step === 2 && <PromptView meta={meta} onNext={() => setStep(3)} />}
-      {step === 3 && <BrainstormView meta={meta} value={brainstorm} setValue={setBrainstorm} onNext={()=> setStep(4)} />}
+      {/* {step === 3 && <BrainstormView meta={meta} value={brainstorm} setValue={setBrainstorm} onNext={()=> setStep(4)} />}
       {step === 4 && (
         <EditorView meta={meta} brainstorm={brainstorm} onNext={(t, a)=>{ setFinalText(t); setAiTranscript(a); setStep(5); }} />
       )}
-      {step === 5 && <SurveyView meta={meta} onSubmit={onFinishSurvey} />}
+      {step === 5 && <SurveyView meta={meta} onSubmit={onFinishSurvey} />} */}
+
+{step === 3 && (
+  <ComplianceGate 
+  onViolation={(n) => console.log("Violation", n)}>
+    <BrainstormView meta={meta} value={brainstorm} setValue={setBrainstorm} onNext={()=> setStep(4)} />
+  </ComplianceGate>
+)}
+
+
+
+{step === 4 && (
+  <ComplianceGate onViolation={(n)=>console.log("Violation", n)}>
+    {/* Development mode attention score display */}
+    {DEV_MODE && (
+      <div className="fixed top-16 right-4 z-50 bg-gray-900 text-white p-3 rounded-lg text-sm font-mono shadow-lg">
+        <div className="text-xs text-gray-300 mb-1">Attention Score (Dev Mode)</div>
+        <div className="flex items-center gap-2">
+          <div className="w-20 h-2 bg-gray-700 rounded-full overflow-hidden">
+            <div 
+              className={`h-full transition-all duration-300 ${
+                attn.score > 0.7 ? 'bg-green-500' : 
+                attn.score > 0.4 ? 'bg-yellow-500' : 'bg-red-500'
+              }`}
+              style={{ width: `${attn.score * 100}%` }}
+            />
+          </div>
+          <span className="text-xs">{(attn.score * 100).toFixed(1)}%</span>
+        </div>
+        <div className="text-xs text-gray-400 mt-1">
+          Nudges: {attn.nudges} | Worst: {(attn.worstScore * 100).toFixed(1)}%
+        </div>
+        {attn.showFinalWarning && (
+          <div className="text-xs text-amber-400 mt-1">⚠️ Final Warning Active</div>
+        )}
+        {attn.finalStrike && (
+          <div className="text-xs text-red-400 mt-1">🚨 Final Strike!</div>
+        )}
+      </div>
+    )}
+
+    {/* attention banners/toasts */}
+    {attn.showFinalWarning && (
+      <div className="fixed top-3 left-1/2 -translate-x-1/2 z-40 bg-amber-100 text-amber-900 border border-amber-300 px-4 py-2 rounded-lg text-sm shadow">
+        Final warning: keep engaging (typing, moving the mouse). If your attention drops again, your submission may be flagged.
+      </div>
+    )}
+    {attn.finalStrike && (
+      <div className="fixed top-3 left-1/2 -translate-x-1/2 z-40 bg-red-100 text-red-700 border border-red-400 px-4 py-2 rounded-lg text-sm shadow">
+        Attention dropped again. Your submission will be flagged for review.
+      </div>
+    )}
+    {attn.showNudge && !attn.finalStrike && (
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-black text-white text-xs px-3 py-2 rounded-lg opacity-90">
+        Still with us? A quick keystroke or scroll helps.
+      </div>
+    )}
+
+    {/* Your existing EditorView */}
+    <EditorView
+      meta={meta}
+      brainstorm={brainstorm}
+      onNext={(t, a) => {
+        // record attention status in your payload
+        setFinalText(t);
+        setAiTranscript(a);
+        // example: store to state to include at submit
+        setAttentionMeta({
+          attentionScoreAtSubmit: attn.score,
+          worstAttentionScore: attn.worstScore,
+          nudges: attn.nudges,
+          finalWarningShown: attn.showFinalWarning,
+          finalStrike: attn.finalStrike, // <-- flag this if you want to invalidate/mark
+        });
+        setStep(5);
+      }}
+    />
+  </ComplianceGate>
+)}
+
+{step === 5 && (
+  <ComplianceGate onViolation={(n) => console.log("Violation", n)}>
+    <SurveyView meta={meta} onSubmit={onFinishSurvey} />
+  </ComplianceGate>
+)}
+
     </div>
   );
 };
