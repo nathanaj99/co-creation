@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ComplianceGate } from "./ComplianceGate";
 import { useWritingAttention } from "./useWritingAttention"; 
+import { supabase } from './lib/supabase';
+
 
 /*
   Prolific User Study Skeleton (TypeScript/React, single-file)
@@ -23,7 +25,7 @@ import { useWritingAttention } from "./useWritingAttention";
 */
 
 // Development mode - set to true to disable all timers for faster development
-const DEV_MODE = false;
+const DEV_MODE = true;
 
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
@@ -34,6 +36,164 @@ const qs = new URLSearchParams(typeof window !== "undefined" ? window.location.s
 const getProlificIdFromURL = () => qs.get("PROLIFIC_PID") || qs.get("prolific_id") || qs.get("pid") || "ANON";
 
 const todayISO = () => new Date().toISOString();
+
+// ---- Supabase Integration ----
+// Call once per participant (idempotent-ish)
+// async function ensureParticipant(prolificId: string, group_key: string) {
+//   try {
+//     if (!supabase || !supabase.from) {
+//       console.warn('Supabase client not available, skipping participant creation');
+//       return;
+//     }
+//     await supabase.from('participants').insert({ prolific_id: prolificId, group_key });
+//   } catch (error) {
+//     console.warn('Failed to create participant:', error);
+//   }
+// }
+
+// ensureParticipant: use UPSERT so repeated visits don't fail
+async function ensureParticipant(prolificId: string, group_key: string) {
+  try {
+    if (!supabase || !supabase.from) {
+      console.warn('Supabase client not available, skipping participant creation');
+      return;
+    }
+    
+    // Check if participant already exists
+    const { data: existing, error: checkError } = await supabase
+      .from('participants')
+      .select('prolific_id')
+      .eq('prolific_id', prolificId)
+      .single();
+
+    if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = no rows returned
+      console.error('Error checking participant:', checkError);
+      return;
+    }
+
+    if (existing) {
+      console.log('participants already exists, skipping insert');
+      return;
+    }
+
+    // Only insert if participant doesn't exist
+    const { error } = await supabase
+      .from('participants')
+      .insert({ prolific_id: prolificId, group_key, is_banned: false });
+
+    if (error) {
+      console.log('participants insert:', error.message);
+    } else {
+      console.log('participants insert: OK');
+    }
+  } catch (error) {
+    console.warn('Failed to create participant:', error);
+  }
+}
+
+// Ban a participant
+async function banParticipant(prolificId: string) {
+  try {
+    if (!supabase || !supabase.from) {
+      console.warn('Supabase client not available, cannot ban participant');
+      return;
+    }
+
+    console.log('🚫 Attempting to ban participant:', prolificId);
+
+    const { data, error, count } = await supabase
+      .from('participants')
+      .update({ is_banned: true })
+      .eq('prolific_id', prolificId)
+      .select();
+
+    console.log('Ban result:', { 
+      data, 
+      error, 
+      count,
+      errorCode: error?.code,
+      errorMessage: error?.message,
+      errorDetails: error?.details,
+      errorHint: error?.hint
+    });
+
+    if (error) {
+      console.error('❌ Failed to ban participant:', error);
+      console.error('Error details:', JSON.stringify(error, null, 2));
+    } else {
+      console.log('✅ Participant banned successfully:', prolificId);
+      console.log('Updated rows:', data);
+    }
+  } catch (error) {
+    console.error('❌ Exception banning participant:', error);
+  }
+}
+
+
+// Start a session (get session_id)
+// async function startSession(prolificId: string) {
+//   if (!supabase || !supabase.from) {
+//     console.warn('Supabase client not available, using mock session ID');
+//     return `mock-session-${Date.now()}`;
+//   }
+//   const { data, error } = await supabase
+//     .from('sessions')
+//     .insert({ prolific_id: prolificId })
+//     .select('id')
+//     .single();
+//   if (error) throw error;
+//   return data.id as string;
+// }
+
+// startSession: generate a UUID locally and DO NOT .select()
+async function startSession(prolificId: string) {
+  const sessionId = crypto.randomUUID(); // avoids SELECT after INSERT
+  const { error } = await supabase
+    .from('sessions')
+    .insert({ id: sessionId, prolific_id: prolificId });
+
+  console.log('sessions insert:', error?.message || 'OK');
+
+  // if (error) {
+  //   console.error('sessions insert failed:', error);
+  //   throw error;
+  // }
+  return sessionId;
+}
+
+
+// ---- Snapshot Tracking System ----
+const snapshotBuffer: any[] = [];
+let flushTimer: number | undefined;
+
+// Save a text snapshot to the database
+function saveSnapshot(session_id: string, phase: 'brainstorm'|'writing', textbox: 'main'|'chat', text: string) {
+  snapshotBuffer.push({
+    session_id,
+    timestamp: new Date().toISOString(),
+    phase,
+    textbox,
+    text
+  });
+  
+  // Batch flush snapshots
+  if (!flushTimer) {
+    flushTimer = window.setTimeout(async () => {
+      const batch = snapshotBuffer.splice(0, snapshotBuffer.length);
+      flushTimer = undefined;
+      if (batch.length && supabase && supabase.from) {
+        try {
+          await supabase.from('snapshots').insert(batch);
+          console.log(`💾 Saved ${batch.length} snapshot(s)`);
+        } catch (error) {
+          console.error('Failed to flush snapshots:', error);
+        }
+      } else if (batch.length) {
+        console.log('Snapshots buffered (Supabase not available):', batch.length);
+      }
+    }, 1000);
+  }
+}
 
 // ---- Placeholder Stats Service (replace with your backend) ----
 class LocalStats {
@@ -74,35 +234,203 @@ class LocalStats {
 }
 
 // ---- Assignment Persistence (placeholder) ----
-class LocalAssignment {
-  static KEY_PREFIX = "study_assignment_v1_";
-
-  static get(prolificId: string): GroupKey | null {
-    const raw = localStorage.getItem(LocalAssignment.KEY_PREFIX + prolificId);
-    return (raw as GroupKey) || null;
+// ---- Check participant status and handle re-entry ----
+async function checkParticipantStatus(prolificId: string): Promise<{
+  canProceed: boolean;
+  existingGroup?: GroupKey;
+  reason?: string;
+}> {
+  if (!supabase || !supabase.from) {
+    console.warn('⚠️ Supabase not available, allowing participant');
+    return { canProceed: true };
   }
 
-  static set(prolificId: string, group: GroupKey) {
-    localStorage.setItem(LocalAssignment.KEY_PREFIX + prolificId, group);
+  try {
+    // Check if participant exists in database
+    const { data: participant, error: partError } = await supabase
+      .from('participants')
+      .select('prolific_id, group_key, is_banned')
+      .eq('prolific_id', prolificId)
+      .single();
+
+    if (partError && partError.code !== 'PGRST116') { // PGRST116 = no rows returned
+      console.error('Error checking participant:', partError);
+      return { canProceed: true }; // Allow on error
+    }
+
+    if (!participant) {
+      // New participant - can proceed
+      console.log('✨ New participant');
+      return { canProceed: true };
+    }
+
+    // Check if participant is banned
+    if (participant.is_banned) {
+      console.log('🚫 Participant is banned');
+      return {
+        canProceed: false,
+        reason: 'banned',
+        existingGroup: participant.group_key
+      };
+    }
+
+    console.log(`📌 Existing participant found: ${prolificId}, group: ${participant.group_key}`);
+
+    // Check if they have a submission (completed study)
+    const { data: sessions, error: sessError } = await supabase
+      .from('sessions')
+      .select('id')
+      .eq('prolific_id', prolificId);
+
+    if (sessError) {
+      console.error('Error checking sessions:', sessError);
+      return { canProceed: true, existingGroup: participant.group_key };
+    }
+
+    if (sessions && sessions.length > 0) {
+      const sessionIds = sessions.map((s: any) => s.id);
+
+      // Check for submission
+      const { data: submission, error: subError } = await supabase
+        .from('submissions')
+        .select('session_id')
+        .in('session_id', sessionIds)
+        .limit(1);
+
+      if (subError) {
+        console.error('Error checking submissions:', subError);
+        return { canProceed: true, existingGroup: participant.group_key };
+      }
+
+      if (submission && submission.length > 0) {
+        console.log('🚫 Participant has already completed the study');
+        return { 
+          canProceed: false, 
+          reason: 'already_completed',
+          existingGroup: participant.group_key
+        };
+      }
+
+      // Check for writing phase snapshots
+      const { data: writingSnapshot, error: snapError } = await supabase
+        .from('snapshots')
+        .select('session_id')
+        .in('session_id', sessionIds)
+        .eq('phase', 'writing')
+        .limit(1);
+
+      if (snapError) {
+        console.error('Error checking snapshots:', snapError);
+        return { canProceed: true, existingGroup: participant.group_key };
+      }
+
+      if (writingSnapshot && writingSnapshot.length > 0) {
+        console.log('🚫 Participant has started writing phase');
+        return { 
+          canProceed: false, 
+          reason: 'writing_started',
+          existingGroup: participant.group_key
+        };
+      }
+    }
+
+    // Participant exists but hasn't reached writing phase - allow restart with same group
+    console.log('✅ Participant can restart with existing group:', participant.group_key);
+    return { canProceed: true, existingGroup: participant.group_key };
+
+  } catch (err) {
+    console.error('Error in checkParticipantStatus:', err);
+    return { canProceed: true }; // Allow on error
   }
 }
 
 // ---- Group randomization with balancing ----
 async function assignGroupBalanced(prolificId: string): Promise<GroupKey> {
-  // 1) If already assigned, reuse
-  const existing = LocalAssignment.get(prolificId);
-  if (existing) return existing;
+  // 1) Check participant status
+  const status = await checkParticipantStatus(prolificId);
+  
+  if (!status.canProceed) {
+    throw new Error(status.reason || 'cannot_proceed');
+  }
 
-  // 2) Fetch counts (placeholder with LocalStats). Replace this with your server endpoint.
-  const counts = LocalStats.getCounts();
+  // If participant exists with a group, reuse it
+  if (status.existingGroup) {
+    console.log(`📌 Reusing existing group assignment for ${prolificId}:`, status.existingGroup);
+    return status.existingGroup;
+  }
+
+  // 2) New participant - fetch counts from Supabase (actual completion counts)
+  let counts: Record<GroupKey, number> = {
+    "AI-DIV": 0,
+    "AI-CONV": 0,
+    "SELF-DIV": 0,
+    "SELF-CONV": 0
+  };
+
+  if (supabase && supabase.from) {
+    try {
+      // Query submissions table directly and join to get group_key
+      const { data, error } = await supabase
+        .from('submissions')
+        .select(`
+          session_id,
+          sessions!inner (
+            id,
+            prolific_id,
+            participants!inner (
+              prolific_id,
+              group_key
+            )
+          )
+        `);
+
+      console.log('📡 Supabase query response:', { data, error });
+
+      if (error) {
+        console.warn('⚠️ Failed to fetch group counts from Supabase:', error.message);
+        console.log('Falling back to local counts');
+        counts = LocalStats.getCounts();
+      } else if (data) {
+        // Count completions by group
+        const groupCounts: Record<string, number> = {};
+        data.forEach((submission: any) => {
+          const groupKey = submission.sessions?.participants?.group_key;
+          if (groupKey) {
+            groupCounts[groupKey] = (groupCounts[groupKey] || 0) + 1;
+          }
+        });
+        
+        // Update counts object
+        GROUPS.forEach(group => {
+          counts[group] = groupCounts[group] || 0;
+        });
+        
+        console.log('✅ Supabase completion counts by group:', counts);
+        console.log('📊 Total completions:', data.length);
+        console.log('📋 Raw group counts:', groupCounts);
+      }
+    } catch (err) {
+      console.warn('⚠️ Error querying Supabase:', err);
+      console.log('Falling back to local counts');
+      counts = LocalStats.getCounts();
+    }
+  } else {
+    console.warn('⚠️ Supabase not available, using local counts');
+    counts = LocalStats.getCounts();
+  }
+
+  console.log('📊 Current group counts:', counts);
 
   // 3) Find min count groups, break ties randomly
   const min = Math.min(...GROUPS.map((g) => counts[g] || 0));
   const candidates = GROUPS.filter((g) => (counts[g] || 0) === min);
+  
+  console.log(`🎲 Minimum count: ${min}, Candidates:`, candidates);
+  
   const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+  
+  console.log(`✨ Assigned ${prolificId} to group: ${chosen}`);
 
-  // 4) Persist locally (your backend should atomically lock this)
-  LocalAssignment.set(prolificId, chosen);
   return chosen;
 }
 
@@ -136,7 +464,7 @@ const Shell: React.FC<{ title: string; children: React.ReactNode; footer?: React
 );
 
 // ---- View 1: Instructions ----
-const InstructionsView: React.FC<{ meta: SessionMeta; onNext: () => void }>=({ meta, onNext }) => {
+const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null; onNext: () => void }>=({ meta, sessionId, onNext }) => {
   const [ack, setAck] = useState(false);
   const [showAICheck, setShowAICheck] = useState(false);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
@@ -155,7 +483,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; onNext: () => void }>=({ m
     }
   }, [timeRemaining]);
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (timeRemaining > 0) return;
     
     if (!showAICheck) {
@@ -175,6 +503,8 @@ const InstructionsView: React.FC<{ meta: SessionMeta; onNext: () => void }>=({ m
           setShowError(false); // Immediately hide error in dev mode
         }
       } else {
+        // Failed all attempts - ban participant
+        await banParticipant(meta.prolificId);
         setShowFinalError(true);
       }
     }
@@ -184,18 +514,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; onNext: () => void }>=({ m
     <Shell
       title="Instructions"
       footer={
-        showFinalError ? (
-          <a 
-            href="/"
-            className="px-4 py-2 rounded-xl bg-red-600 text-white hover:bg-red-700"
-            onClick={(e) => {
-              e.preventDefault();
-              window.location.href = '/';
-            }}
-          >
-            Exit Study
-          </a>
-        ) : (
+        showFinalError ? null : (
           <div className="flex flex-col items-center gap-3">
             {!showAICheck && timeRemaining > 0 && (
               <div className="text-sm text-gray-500">
@@ -218,7 +537,12 @@ const InstructionsView: React.FC<{ meta: SessionMeta; onNext: () => void }>=({ m
       }
     >
       <div className="space-y-4">
-        <div className="text-sm text-gray-600">Participant: <span className="font-mono">{meta.prolificId}</span> · Group: <span className="font-mono">{meta.group}</span></div>
+        <div className="text-sm text-gray-600">
+          Participant: <span className="font-mono">{meta.prolificId}</span> · Group: <span className="font-mono">{meta.group}</span>
+          {DEV_MODE && sessionId && (
+            <> · Session: <span className="font-mono text-xs">{sessionId}</span></>
+          )}
+        </div>
         <p className="leading-relaxed">
           Welcome! You'll complete a short creative writing task for a research study. Your screen time and key presses are
           recorded for research purposes only. Please read the instructions carefully.
@@ -314,10 +638,24 @@ const InstructionsView: React.FC<{ meta: SessionMeta; onNext: () => void }>=({ m
 };
 
 // ---- View 2: Brainstorm ----
-const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: string; setValue: (s: string)=>void }>=({ onNext, meta, value, setValue }) => {
+const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: string; setValue: (s: string)=>void; sessionId?: string | null }>=({ onNext, meta, value, setValue, sessionId }) => {
   const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 150); // 5 minutes in seconds
   const [showConfirmation, setShowConfirmation] = React.useState(false);
   const [showReminder, setShowReminder] = React.useState<false | '2min' | '30sec'>(false);
+  
+  // Brainstorm field states
+  const [quick_ideas, set_quick_ideas] = React.useState('')
+  const [main_char, set_main_char] = React.useState('')
+  const [setting, set_setting] = React.useState('')
+  const [conflict, set_conflict] = React.useState('')
+  const [resolution, set_resolution] = React.useState('')
+  const [plot, set_plot] = React.useState('')
+  
+  // Ref to track current brainstorm value without re-renders
+  const valueRef = React.useRef(value);
+  React.useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
 
   React.useEffect(() => {
     if (!DEV_MODE && timeRemaining > 0) {
@@ -340,6 +678,56 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
       onNext(); // Force proceed when time is up (only in production)
     }
   }, [timeRemaining]);
+
+  // Refs to track current brainstorm values without triggering re-renders
+  const brainstormRefs = React.useRef({
+    quick_ideas,
+    main_char,
+    setting,
+    conflict,
+    resolution,
+    plot
+  });
+
+  // Keep refs in sync with state
+  React.useEffect(() => {
+    brainstormRefs.current = {
+      quick_ideas,
+      main_char,
+      setting,
+      conflict,
+      resolution,
+      plot
+    };
+  }, [quick_ideas, main_char, setting, conflict, resolution, plot]);
+
+  // Periodic snapshot tracking for brainstorm phase - save as JSON
+  React.useEffect(() => {
+    if (!sessionId) return;
+    
+    const SNAPSHOT_INTERVAL = 5000; // 5 seconds
+    const lastSavedRef = { text: '' };
+    
+    const snapshotTimer = setInterval(() => {
+      // Compile all brainstorm fields into JSON from refs
+      const brainstormData = JSON.stringify(brainstormRefs.current);
+      
+      if (brainstormData !== lastSavedRef.text) {
+        saveSnapshot(sessionId, 'brainstorm', 'main', brainstormData);
+        lastSavedRef.text = brainstormData;
+      }
+    }, SNAPSHOT_INTERVAL);
+    
+    // Save final snapshot on unmount
+    return () => {
+      clearInterval(snapshotTimer);
+      const brainstormData = JSON.stringify(brainstormRefs.current);
+      
+      if (brainstormData !== lastSavedRef.text) {
+        saveSnapshot(sessionId, 'brainstorm', 'main', brainstormData);
+      }
+    };
+  }, [sessionId]); // Only depend on sessionId
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -383,7 +771,18 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
               <p className="text-sm text-gray-600">Are you sure you're done brainstorming?</p>
               <div className="flex gap-3">
                 <button 
-                  onClick={onNext} 
+                  onClick={() => {
+                    // Compile brainstorm data as JSON
+                    const brainstormData = JSON.stringify({
+                      main_char,
+                      setting,
+                      conflict,
+                      resolution,
+                      plot
+                    });
+                    setValue(brainstormData);
+                    onNext();
+                  }} 
                   className="px-4 py-2 rounded-xl bg-black text-white"
                 >
                   Yes, proceed to writing
@@ -407,14 +806,91 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
         </div>
       }
     >
-      <p className="mb-3 text-sm text-gray-600">Outline your story plan. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>!</p>
+      {/* <p className="mb-3 text-sm text-gray-600">Outline your story plan. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>!</p>
       <textarea
         value={value}
-        onChange={(e)=>setValue(e.target.value)}
+        onChange={(e) => setValue(e.target.value)}
         rows={12}
         className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
         placeholder={meta.group.includes("DIV")?"Placeholder...":"Placeholder..."}
-      />
+      /> */}
+      <p className="mb-3 text-sm text-gray-600">Outline your story plan below. Use as many of the boxes as you find necessary. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>!</p>
+<div className="flex flex-col gap-4">
+<div>
+<label className="block mb-1 text-sm font-medium text-gray-700">Quick Ideas</label>
+<textarea
+value={quick_ideas}
+onChange={(e) => set_quick_ideas(e.target.value)}
+rows={3}
+className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
+placeholder="Jot down as many ideas for a story you have."
+/>
+</div>
+
+<div>
+<label className="block mb-1 text-sm font-medium text-gray-700">Main Character</label>
+<p className="mb-3 text-sm text-gray-600">Who is your main character? What are their traits?
+Additionally, what is your character's goal in the story? What do they want?</p>
+<textarea
+value={main_char}
+onChange={(e) => set_main_char(e.target.value)}
+rows={3}
+className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
+placeholder="Who is your main character?"
+/>
+</div>
+
+<div>
+<label className="block mb-1 text-sm font-medium text-gray-700">Setting</label>
+<p className="mb-3 text-sm text-gray-600">Where does this story take place? When does this story take place? What time period does the
+story occur over (1 year? 1 day? 20 minutes?)</p>
+<textarea
+value={setting}
+onChange={(e) => set_setting(e.target.value)}
+rows={3}
+className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
+placeholder="Where and when does the story take place?"
+/>
+</div>
+
+<div>
+<label className="block mb-1 text-sm font-medium text-gray-700">Conflict</label>
+<p className="mb-3 text-sm text-gray-600">What is the main conflict of this story? How does this conflict
+prevent the character from getting what they want? </p>
+<textarea
+value={conflict}
+onChange={(e) => set_conflict(e.target.value)}
+rows={3}
+className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
+placeholder="What problem drives the story?"
+/>
+</div>
+
+<div>
+<label className="block mb-1 text-sm font-medium text-gray-700">Resolution</label>
+<p className="mb-3 text-sm text-gray-600">How does the story end? Does the main character achieve their goal? Why or why not? </p>
+<textarea
+value={resolution}
+onChange={(e) => set_resolution(e.target.value)}
+rows={3}
+className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
+placeholder="How is the conflict resolved?"
+/>
+</div>
+
+<div>
+<label className="block mb-1 text-sm font-medium text-gray-700">Plot</label>
+<p className="mb-3 text-sm text-gray-600">Now, write out the events of the story. How does the story
+get from beginning to end? What happens? How is the resolution reached?</p>
+<textarea
+value={plot}
+onChange={(e) => set_plot(e.target.value)}
+rows={3}
+className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
+placeholder="Summarize the main events or structure."
+/>
+</div>
+</div>
     </Shell>
   );
 };
@@ -435,7 +911,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
     }
   }, [timeRemaining]);
 
-  const handleProceed = () => {
+  const handleProceed = async () => {
     if (timeRemaining > 0) return;
     if (!showAttentionCheck) {
       setShowAttentionCheck(true);
@@ -445,6 +921,8 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
       if (selectedOption === correctAnswer) {
         onNext();
       } else {
+        // Failed attention check - ban participant
+        await banParticipant(meta.prolificId);
         setShowWarning(true);
       }
     }
@@ -530,26 +1008,19 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
         <div className="flex flex-col items-center gap-4">
           {showWarning ? (
             <div className="text-center">
-              <div className="bg-red-100 border-2 border-red-500 rounded-lg p-4 mb-4">
+              <div className="bg-red-100 border-2 border-red-500 rounded-lg p-4">
                 <p className="text-red-700 font-bold text-lg mb-2">⚠️ Warning: Attention Check Failed</p>
                 <p className="text-red-600">
                   Your answer indicates that you did not read the prompt carefully. 
                   This is a serious concern as careful reading is essential for this task.
                 </p>
                 <p className="text-red-600 mt-2">
-                  Unfortunately, we cannot proceed with the study if participants do not read instructions carefully.
+                  Unfortunately, we cannot proceed with the study. You have been removed from participation.
+                </p>
+                <p className="text-red-600 mt-2 text-sm">
+                  Please close this window and return the study on Prolific.
                 </p>
               </div>
-              <a 
-                href="/"
-                className="px-4 py-2 rounded-xl bg-red-600 text-white hover:bg-red-700"
-                onClick={(e) => {
-                  e.preventDefault();
-                  window.location.href = '/';
-                }}
-              >
-                Exit Study
-              </a>
             </div>
           ) : !showAttentionCheck ? (
             <>
@@ -613,8 +1084,12 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
 };
 
 // ---- Editor: AI Chat (placeholder) ----
-const AIChatPanel: React.FC<{ messages: {role:"user"|"assistant"; content:string}[], onSend: (m:string)=>void }>=({ messages, onSend })=>{
-  const [draft, setDraft] = useState("");
+const AIChatPanel: React.FC<{ 
+  messages: {role:"user"|"assistant"; content:string}[], 
+  onSend: (m:string)=>void,
+  draft: string,
+  setDraft: (s:string)=>void
+}>=({ messages, onSend, draft, setDraft })=>{
   return (
     <div className="h-full flex flex-col">
       <div className="font-semibold mb-2">AI Assistant</div>
@@ -648,9 +1123,11 @@ const EditorView: React.FC<{
   meta: SessionMeta;
   brainstorm: string;
   onNext: (finalText: string, aiTranscript: {role:"user"|"assistant"; content:string}[])=>void;
-}> = ({ meta, brainstorm, onNext }) => {
+  sessionId?: string | null;
+}> = ({ meta, brainstorm, onNext, sessionId }) => {
   const [text, setText] = useState("");
   const [aiMessages, setAiMessages] = useState<{role:"user"|"assistant"; content:string}[]>([]);
+  const [chatDraft, setChatDraft] = useState(""); // Lift chat input state
   const [keys, setKeys] = useState<{t:string; k:string}[]>([]);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const [timeRemaining, setTimeRemaining] = useState(DEV_MODE ? 0 : 20 * 60); // 20 minutes in seconds
@@ -693,7 +1170,9 @@ const EditorView: React.FC<{
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Keystroke logging scaffold
+  const isAI = meta.group.startsWith("AI");
+
+  // Keystroke logging scaffold (for internal tracking)
   useEffect(()=>{
     const handler = (e: KeyboardEvent) => {
       setKeys((prev)=> prev.length < 5000 ? [...prev, { t: new Date().toISOString(), k: e.key }] : prev);
@@ -701,8 +1180,58 @@ const EditorView: React.FC<{
     window.addEventListener("keydown", handler);
     return ()=> window.removeEventListener("keydown", handler);
   }, []);
-
-  const isAI = meta.group.startsWith("AI");
+  
+  // Refs to access current values without triggering re-renders
+  const textRef = useRef(text);
+  const chatDraftRef = useRef(chatDraft);
+  
+  // Keep refs in sync with state
+  useEffect(() => {
+    textRef.current = text;
+  }, [text]);
+  
+  useEffect(() => {
+    chatDraftRef.current = chatDraft;
+  }, [chatDraft]);
+  
+  // Periodic snapshot tracking for writing phase - saves both main text and chat input every N seconds
+  useEffect(() => {
+    if (!sessionId) return;
+    
+    const SNAPSHOT_INTERVAL = 5000; // 5 seconds
+    const lastSavedRef = { mainText: '', chatText: '' };
+    
+    const snapshotTimer = setInterval(() => {
+      const currentMainText = textRef.current;
+      const currentChatText = chatDraftRef.current;
+      
+      // Save main text if changed
+      if (currentMainText !== lastSavedRef.mainText) {
+        saveSnapshot(sessionId, 'writing', 'main', currentMainText);
+        lastSavedRef.mainText = currentMainText;
+      }
+      
+      // Save chat text if changed (only for AI groups)
+      if (isAI && currentChatText !== lastSavedRef.chatText) {
+        saveSnapshot(sessionId, 'writing', 'chat', currentChatText);
+        lastSavedRef.chatText = currentChatText;
+      }
+    }, SNAPSHOT_INTERVAL);
+    
+    // Save final snapshots on unmount
+    return () => {
+      clearInterval(snapshotTimer);
+      const currentMainText = textRef.current;
+      const currentChatText = chatDraftRef.current;
+      
+      if (currentMainText !== lastSavedRef.mainText) {
+        saveSnapshot(sessionId, 'writing', 'main', currentMainText);
+      }
+      if (isAI && currentChatText !== lastSavedRef.chatText) {
+        saveSnapshot(sessionId, 'writing', 'chat', currentChatText);
+      }
+    };
+  }, [sessionId, isAI]); // Only depend on sessionId and isAI
 
   const sendToAI = async (message: string) => {
     // Placeholder: append user message and a fake assistant reply
@@ -720,7 +1249,7 @@ const EditorView: React.FC<{
         <div className="font-semibold">Write Your Story</div>
         <div className="flex items-center gap-4">
           <div className={`text-sm ${
-            wordCount < 300 || wordCount > 500 
+            wordCount < 10 || wordCount > 500 
               ? 'text-red-600 font-semibold' 
               : 'text-green-600 font-semibold'
           }`}>
@@ -732,7 +1261,7 @@ const EditorView: React.FC<{
       <textarea
         ref={editorRef}
         value={text}
-        onChange={(e)=>setText(e.target.value)}
+        onChange={(e) => setText(e.target.value)}
         onPaste={(e)=>{ e.preventDefault(); }}
         rows={18}
         className="w-full border rounded-xl p-3 focus:outline-none focus:ring h-full"
@@ -790,9 +1319,9 @@ const EditorView: React.FC<{
           ) : (
             <button
               onClick={() => setShowConfirmation(true)}
-              disabled={wordCount < 300 || wordCount > 500}
+              disabled={wordCount < 10 || wordCount > 500}
               className={`px-4 py-2 rounded-xl ${
-                wordCount < 300 || wordCount > 500
+                wordCount < 10 || wordCount > 500
                   ? 'bg-gray-300 cursor-not-allowed'
                   : 'bg-black text-white'
               }`}
@@ -814,16 +1343,58 @@ const EditorView: React.FC<{
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 min-h-[520px]">
           <div>{EditorBox}</div>
           <div className="border rounded-2xl p-4">
-            <AIChatPanel messages={aiMessages} onSend={sendToAI} />
+            <AIChatPanel messages={aiMessages} onSend={sendToAI} draft={chatDraft} setDraft={setChatDraft} />
           </div>
         </div>
       ) : (
         <div className="min-h-[520px]">{EditorBox}</div>
       )}
-      <details className="mt-4 text-sm text-gray-600">
-        <summary className="cursor-pointer">Show Brainstorm Outline</summary>
-        <pre className="mt-2 bg-gray-50 p-3 rounded-lg whitespace-pre-wrap">{brainstorm || "(empty)"}</pre>
-      </details>
+      {/* Brainstorm Outline - Always Visible */}
+      <div className="mt-6 border-t pt-4">
+        <h3 className="text-lg font-semibold mb-3">Your Brainstorm Outline</h3>
+        {(() => {
+          try {
+            const brainstormData = JSON.parse(brainstorm || '{}');
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                {brainstormData.main_char && (
+                  <div className="p-3 bg-blue-50 rounded-lg">
+                    <div className="font-semibold text-blue-900 mb-1">Main Character</div>
+                    <div className="text-gray-700">{brainstormData.main_char}</div>
+                  </div>
+                )}
+                {brainstormData.setting && (
+                  <div className="p-3 bg-green-50 rounded-lg">
+                    <div className="font-semibold text-green-900 mb-1">Setting</div>
+                    <div className="text-gray-700">{brainstormData.setting}</div>
+                  </div>
+                )}
+                {brainstormData.conflict && (
+                  <div className="p-3 bg-orange-50 rounded-lg">
+                    <div className="font-semibold text-orange-900 mb-1">Conflict</div>
+                    <div className="text-gray-700">{brainstormData.conflict}</div>
+                  </div>
+                )}
+                {brainstormData.resolution && (
+                  <div className="p-3 bg-purple-50 rounded-lg">
+                    <div className="font-semibold text-purple-900 mb-1">Resolution</div>
+                    <div className="text-gray-700">{brainstormData.resolution}</div>
+                  </div>
+                )}
+                {brainstormData.plot && (
+                  <div className="p-3 bg-gray-50 rounded-lg md:col-span-2">
+                    <div className="font-semibold text-gray-900 mb-1">Plot</div>
+                    <div className="text-gray-700">{brainstormData.plot}</div>
+                  </div>
+                )}
+              </div>
+            );
+          } catch {
+            // Fallback for old format (plain text)
+            return <pre className="mt-2 bg-gray-50 p-3 rounded-lg whitespace-pre-wrap text-sm">{brainstorm || "(no brainstorm)"}</pre>;
+          }
+        })()}
+      </div>
     </Shell>
   );
 };
@@ -874,10 +1445,12 @@ const StudyApp: React.FC = () => {
   const [loaded, setLoaded] = useState(false);
   const [step, setStep] = useState<Step>(1);
   const [meta, setMeta] = useState<SessionMeta | null>(null);
+  const [blocked, setBlocked] = useState<string | null>(null); // Track if participant is blocked
   const [brainstorm, setBrainstorm] = useState("");
   const [finalText, setFinalText] = useState("");
   const [aiTranscript, setAiTranscript] = useState<{role:"user"|"assistant"; content:string}[]>([]);
   const [attentionMeta, setAttentionMeta] = useState<any>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   // Attention tracking for editor step only
   const attn = useWritingAttention(step === 4, {
@@ -888,35 +1461,143 @@ const StudyApp: React.FC = () => {
     maxNudges: 2,
   });
 
-  // Boot: capture prolific id, assign group
+  // Boot: capture prolific id, assign group, and start Supabase session
+  const initRef = useRef(false); // Prevent duplicate initialization
+  
   useEffect(() => {
+    // Guard against double-initialization (React Strict Mode in dev)
+    if (initRef.current) {
+      console.log('⚠️ Skipping duplicate initialization (React Strict Mode)');
+      return;
+    }
+    initRef.current = true;
+    
     const init = async () => {
-      const prolificId = getProlificIdFromURL();
-      const group = await assignGroupBalanced(prolificId);
-      const startedAt = todayISO();
-      setMeta({ prolificId, group, startedAt });
-      setLoaded(true);
+      try {
+        const prolificId = getProlificIdFromURL();
+        
+        // Debug: Check environment variables
+        console.log('🔍 Debug Info:');
+        console.log('VITE_SUPABASE_URL:', import.meta.env.VITE_SUPABASE_URL ? '✅ Set' : '❌ Missing');
+        console.log('VITE_SUPABASE_ANON:', import.meta.env.VITE_SUPABASE_ANON ? '✅ Set' : '❌ Missing');
+        console.log('Supabase client:', supabase ? '✅ Created' : '❌ Failed');
+        
+        // Check participant status and assign group
+        const group = await assignGroupBalanced(prolificId);
+        const startedAt = todayISO();
+        
+        // Ensure participant exists in database and start session
+        await ensureParticipant(prolificId, group);
+        const sid = await startSession(prolificId);
+        console.log('Session ID:', sid);
+        
+        setMeta({ prolificId, group, startedAt });
+        setSessionId(sid);
+        setLoaded(true);
+      } catch (error: any) {
+        console.error('❌ Failed to initialize session:', error);
+        
+        // Check if participant is blocked
+        if (error.message === 'already_completed' || error.message === 'writing_started' || error.message === 'banned') {
+          console.log('🚫 Participant blocked:', error.message);
+          setBlocked(error.message);
+          setLoaded(true);
+        } else {
+          console.error('Error details:', error);
+          // For other errors, try fallback
+          const prolificId = getProlificIdFromURL();
+          const group = await assignGroupBalanced(prolificId);
+          const startedAt = todayISO();
+          setMeta({ prolificId, group, startedAt });
+          setLoaded(true);
+        }
+      }
     };
     init();
   }, []);
 
-  const onFinishSurvey = (survey: any) => {
+  const onFinishSurvey = async (survey: any) => {
     if (!meta) return;
-    // Persist locally and update balancing counts as a placeholder for server submission
-    LocalStats.increment(meta.group);
-    LocalStats.markCompleted(meta.prolificId);
+    
+    try {
+      // Flush any remaining snapshots before completing
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = undefined;
+      }
+      if (snapshotBuffer.length > 0 && sessionId && supabase && supabase.from) {
+        try {
+          await supabase.from('snapshots').insert(snapshotBuffer.splice(0, snapshotBuffer.length));
+          console.log('💾 Final snapshots saved');
+        } catch (error) {
+          console.error('Failed to flush final snapshots:', error);
+        }
+      }
+      
+      // Submit final data to Supabase
+      if (sessionId) {
+        const wordCount = finalText.trim().split(/\s+/).filter(word => word.length > 0).length;
+        
+        console.log('🔄 Submitting to Supabase...');
+        console.log('Session ID:', sessionId);
+        console.log('Word count:', wordCount);
+        console.log('Final text length:', finalText.length);
+        
+        if (supabase && supabase.from) {
+          const submissionResult = await supabase.from('submissions').insert({
+            session_id: sessionId,
+            brainstorm_text: brainstorm, // This is now a JSON string with structured brainstorm data
+            final_text: finalText,
+            word_count: wordCount,
+            attention_meta: attentionMeta,   // include finalStrike etc.
+            survey_responses: survey,
+            ai_transcript: aiTranscript,
+          });
 
-    // Bundle session payload (replace this with network POST)
-    const payload = {
-      meta,
-      brainstorm,
-      finalText,
-      aiTranscript,
-      survey,
-      attentionMeta, // Include attention tracking data
-      finishedAt: todayISO(),
-    };
-    console.log("[SUBMIT] session payload", payload);
+          if (submissionResult.error) {
+            console.error('❌ Submission failed:', submissionResult.error);
+          } else {
+            console.log('✅ Submission successful:', submissionResult.data);
+          }
+
+          // Mark session as finished
+          const sessionResult = await supabase.from('sessions')
+            .update({ finished_at: new Date().toISOString() })
+            .eq('id', sessionId);
+            
+          if (sessionResult.error) {
+            console.error('❌ Session update failed:', sessionResult.error);
+          } else {
+            console.log('✅ Session marked as finished');
+          }
+        } else {
+          console.warn('⚠️ Supabase not available, data saved locally only');
+        }
+      } else {
+        console.error('❌ No session ID available for submission');
+      }
+      
+      // Persist locally and update balancing counts as a placeholder for server submission
+      LocalStats.increment(meta.group);
+      LocalStats.markCompleted(meta.prolificId);
+
+      // Bundle session payload (for console logging/debugging)
+      const payload = {
+        meta,
+        sessionId, // Include Supabase session ID
+        brainstorm,
+        finalText,
+        aiTranscript,
+        survey,
+        attentionMeta, // Include attention tracking data
+        finishedAt: todayISO(),
+      };
+      console.log("[SUBMIT] session payload", payload);
+
+    } catch (error) {
+      console.error('❌ Failed to submit study data:', error);
+      // Still proceed to completion screen even if submission fails
+    }
 
     // Confirmation view (inline)
     setStep(4.1 as any); // pseudo-step for completion screen
@@ -934,13 +1615,51 @@ const StudyApp: React.FC = () => {
     </Shell>
   );
 
-  if (!loaded || !meta) return <div className="p-6 text-gray-500">Loading…</div>;
+  // Blocked participant screen
+  const BlockedScreen = (
+    <Shell title={blocked === 'banned' ? 'Access Denied' : 'Already Participated'}>
+      <div className="prose max-w-none">
+        {blocked === 'banned' ? (
+          <>
+            <h2 className="text-xl font-semibold text-red-600">Study Access Denied</h2>
+            <p className="text-red-600">
+              You have been removed from this study due to failing attention checks.
+            </p>
+            <p className="text-gray-600">
+              Please close this window and return the study on Prolific.
+            </p>
+          </>
+        ) : (
+          <>
+            <h2 className="text-xl font-semibold text-red-600">Study Already Completed</h2>
+            <p>
+              Our records show that you have already {blocked === 'already_completed' ? 'completed' : 'started'} this study.
+              Each participant can only complete the study once.
+            </p>
+            <p className="text-gray-600">
+              Thank you for your interest! Please return to Prolific and mark this study as complete if you have already submitted it.
+            </p>
+            <div className="mt-6 p-4 bg-blue-50 rounded-lg">
+              <p className="text-sm font-semibold">If you believe this is an error:</p>
+              <p className="text-sm">Please contact the researcher with your Prolific ID.</p>
+            </div>
+          </>
+        )}
+      </div>
+    </Shell>
+  );
+
+  if (!loaded) return <div className="p-6 text-gray-500">Loading…</div>;
+  
+  if (blocked) return BlockedScreen;
+  
+  if (!meta) return <div className="p-6 text-gray-500">Loading…</div>;
 
   if ((step as any) === 4.1) return CompletionScreen;
 
   return (
     <div className="min-h-screen">
-      {step === 1 && <InstructionsView meta={meta} onNext={()=> setStep(2)} />}
+      {step === 1 && <InstructionsView meta={meta} sessionId={sessionId} onNext={()=> setStep(2)} />}
       {step === 2 && <PromptView meta={meta} onNext={() => setStep(3)} />}
       {/* {step === 3 && <BrainstormView meta={meta} value={brainstorm} setValue={setBrainstorm} onNext={()=> setStep(4)} />}
       {step === 4 && (
@@ -951,7 +1670,7 @@ const StudyApp: React.FC = () => {
 {step === 3 && (
   <ComplianceGate 
   onViolation={(n) => console.log("Violation", n)}>
-    <BrainstormView meta={meta} value={brainstorm} setValue={setBrainstorm} onNext={()=> setStep(4)} />
+    <BrainstormView meta={meta} value={brainstorm} setValue={setBrainstorm} sessionId={sessionId} onNext={()=> setStep(4)} />
   </ComplianceGate>
 )}
 
@@ -1008,6 +1727,7 @@ const StudyApp: React.FC = () => {
     <EditorView
       meta={meta}
       brainstorm={brainstorm}
+      sessionId={sessionId}
       onNext={(t, a) => {
         // record attention status in your payload
         setFinalText(t);
