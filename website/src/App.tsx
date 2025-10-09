@@ -25,7 +25,7 @@ import { supabase } from './lib/supabase';
 */
 
 // Development mode - set to true to disable all timers for faster development
-const DEV_MODE = false;
+const DEV_MODE = true;
 
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
@@ -428,7 +428,7 @@ async function assignGroupBalanced(prolificId: string): Promise<GroupKey> {
   console.log(`🎲 Minimum count: ${min}, Candidates:`, candidates);
   
   const chosen = candidates[Math.floor(Math.random() * candidates.length)];
-  
+
   console.log(`✨ Assigned ${prolificId} to group: ${chosen}`);
 
   return chosen;
@@ -498,8 +498,8 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
         setAttempts(prev => prev + 1);
         setShowError(true);
         if (!DEV_MODE) {
-          setTimeout(() => setShowError(false), 5000);
-        } else {
+        setTimeout(() => setShowError(false), 5000);
+      } else {
           setShowError(false); // Immediately hide error in dev mode
         }
       } else {
@@ -641,10 +641,10 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
 
 // ---- View 2: Brainstorm ----
 const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: string; setValue: (s: string)=>void; sessionId?: string | null }>=({ onNext, meta, value, setValue, sessionId }) => {
-  const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 150); // 5 minutes in seconds
+  const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 300); // 5 minutes in seconds
   const [showConfirmation, setShowConfirmation] = React.useState(false);
   const [showReminder, setShowReminder] = React.useState<false | '2min' | '30sec'>(false);
-  
+
   // Brainstorm field states
   const [quick_ideas, set_quick_ideas] = React.useState('')
   const [main_char, set_main_char] = React.useState('')
@@ -737,11 +737,27 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Calculate total word count across all fields
+  const totalWords = React.useMemo(() => {
+    const allText = [main_char, setting, conflict, resolution, plot].join(' ');
+    return allText.trim().split(/\s+/).filter(word => word.length > 0).length;
+  }, [main_char, setting, conflict, resolution, plot]);
+
   const handleNext = () => {
     if (!showConfirmation) {
       setShowConfirmation(true);
       return;
     }
+    
+    // Compile brainstorm data as JSON
+    const brainstormData = JSON.stringify({
+      main_char,
+      setting,
+      conflict,
+      resolution,
+      plot
+    });
+    setValue(brainstormData);
     onNext();
   };
 
@@ -798,12 +814,36 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
               </div>
             </div>
           ) : (
+            <>
+              {(timeRemaining > 240 || totalWords < 20) && (
+                <div className="text-sm text-gray-600 text-center">
+                  {timeRemaining > 240 && (
+                    <div>Please spend at least 60 seconds brainstorming ({300 - timeRemaining} / 60 seconds)</div>
+                  )}
+                  {totalWords < 20 && (
+                    <div>Please write at least 20 words in your outline ({totalWords} / 20 words)</div>
+                  )}
+                </div>
+              )}
             <button 
               onClick={handleNext} 
-              className="px-4 py-2 rounded-xl bg-black text-white"
+                disabled={timeRemaining > 240 || totalWords < 20}
+                className={`px-4 py-2 rounded-xl ${
+                  timeRemaining > 240 || totalWords < 20
+                    ? 'bg-gray-300 cursor-not-allowed text-gray-600'
+                    : 'bg-black text-white'
+                }`}
+                title={
+                  timeRemaining > 240 
+                    ? `Please wait ${timeRemaining - 240} more seconds`
+                    : totalWords < 20
+                      ? `Need ${20 - totalWords} more words`
+                      : ''
+                }
             >
               Go to Writing
             </button>
+            </>
           )}
         </div>
       }
@@ -823,6 +863,7 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
 <textarea
 value={quick_ideas}
 onChange={(e) => set_quick_ideas(e.target.value)}
+onPaste={(e) => e.preventDefault()}
 rows={3}
 className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="Jot down as many ideas for a story you have."
@@ -836,6 +877,7 @@ Additionally, what is your character's goal in the story? What do they want?</p>
 <textarea
 value={main_char}
 onChange={(e) => set_main_char(e.target.value)}
+onPaste={(e) => e.preventDefault()}
 rows={3}
 className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="Who is your main character?"
@@ -849,6 +891,7 @@ story occur over (1 year? 1 day? 20 minutes?)</p>
 <textarea
 value={setting}
 onChange={(e) => set_setting(e.target.value)}
+onPaste={(e) => e.preventDefault()}
 rows={3}
 className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="Where and when does the story take place?"
@@ -862,6 +905,7 @@ prevent the character from getting what they want? </p>
 <textarea
 value={conflict}
 onChange={(e) => set_conflict(e.target.value)}
+onPaste={(e) => e.preventDefault()}
 rows={3}
 className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="What problem drives the story?"
@@ -874,6 +918,7 @@ placeholder="What problem drives the story?"
 <textarea
 value={resolution}
 onChange={(e) => set_resolution(e.target.value)}
+onPaste={(e) => e.preventDefault()}
 rows={3}
 className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="How is the conflict resolved?"
@@ -887,6 +932,7 @@ get from beginning to end? What happens? How is the resolution reached?</p>
 <textarea
 value={plot}
 onChange={(e) => set_plot(e.target.value)}
+onPaste={(e) => e.preventDefault()}
 rows={3}
 className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="Summarize the main events or structure."
@@ -1097,7 +1143,7 @@ const AIChatPanel: React.FC<{
       <div className="font-semibold mb-2">AI Assistant</div>
       <div className="flex-1 border rounded-xl p-3 overflow-y-auto space-y-3">
         {messages.length===0 && (
-          <div className="text-sm text-gray-500">Ask the AI for help brainstorming or editing. (Wire up your API in onSend)</div>
+          <div className="text-sm text-gray-500">Ask the AI for a first draft or to edit. (Wire up your API in onSend)</div>
         )}
         {messages.map((m, i)=> (
           <div key={i} className={"p-2 rounded-lg " + (m.role==="assistant"?"bg-gray-100":"bg-gray-50 border")}> 
@@ -1115,6 +1161,18 @@ const AIChatPanel: React.FC<{
           onKeyDown={(e)=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); if(draft.trim()) { onSend(draft.trim()); setDraft(""); } } }}
         />
         <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={()=>{ if(draft.trim()){ onSend(draft.trim()); setDraft(""); } }}>Send</button>
+      </div>
+      
+      {/* AI Prompting Tips */}
+      <div className="mt-3 p-3 bg-gray-50 rounded-lg text-xs text-gray-700">
+        <div className="font-semibold mb-1">💡 Tips for prompting the AI:</div>
+        <ul className="space-y-1 list-disc list-inside">
+          <li>"Write a first draft about [your story idea]"</li>
+          <li>"Generate a creative opening paragraph for my story"</li>
+          <li>"Help me develop the conflict between [character] and [obstacle]"</li>
+          <li>"Rewrite this paragraph in a more [dramatic/humorous/suspenseful] tone"</li>
+          <li>"Expand on this idea: [paste your brainstorm note]"</li>
+        </ul>
       </div>
     </div>
   );
@@ -1136,6 +1194,7 @@ const EditorView: React.FC<{
   const [showReminder, setShowReminder] = useState<false | '5min' | '1min'>(false);
   const [wordCount, setWordCount] = useState(0);
   const [showConfirmation, setShowConfirmation] = useState(false);
+  const [hasUsedAI, setHasUsedAI] = useState(false); // Track if user has interacted with AI
   
   // Update word count whenever text changes
   useEffect(() => {
@@ -1182,7 +1241,7 @@ const EditorView: React.FC<{
     window.addEventListener("keydown", handler);
     return ()=> window.removeEventListener("keydown", handler);
   }, []);
-  
+
   // Refs to access current values without triggering re-renders
   const textRef = useRef(text);
   const chatDraftRef = useRef(chatDraft);
@@ -1236,11 +1295,16 @@ const EditorView: React.FC<{
   }, [sessionId, isAI]); // Only depend on sessionId and isAI
 
   const sendToAI = async (message: string) => {
+    // Mark that user has interacted with AI
+    if (!hasUsedAI) {
+      setHasUsedAI(true);
+    }
+    
     // Placeholder: append user message and a fake assistant reply
     setAiMessages((msgs)=>[...msgs, { role:"user", content: message }]);
     // ---- Replace below with your API call ----
     if (!DEV_MODE) {
-      await new Promise((r)=>setTimeout(r, 300));
+    await new Promise((r)=>setTimeout(r, 300));
     }
     setAiMessages((msgs)=>[...msgs, { role:"assistant", content: "[placeholder] API not connected yet. Your note: " + message }]);
   };
@@ -1251,28 +1315,51 @@ const EditorView: React.FC<{
         <div className="font-semibold">Write Your Story</div>
         <div className="flex items-center gap-4">
           <div className={`text-sm ${
-            wordCount < 10 || wordCount > 500 
+            wordCount < 10 || wordCount > 350 
               ? 'text-red-600 font-semibold' 
               : 'text-green-600 font-semibold'
           }`}>
             {wordCount} words
           </div>
-          <div className="text-xs text-gray-500">Required length: 300-500 words</div>
+          <div className="text-xs text-gray-500">Required length: 200-350 words</div>
         </div>
       </div>
+      {isAI && !hasUsedAI && (
+        <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
+          <p className="text-blue-900 font-semibold mb-1">📝 Please start with the AI Assistant</p>
+          <p className="text-blue-800">Use the AI panel on the right to generate a first draft or story components before editing here.</p>
+        </div>
+      )}
+      {isAI && hasUsedAI && (
+        <div className="mb-3 p-3 bg-green-50 border border-green-200 rounded-lg text-sm">
+          <p className="text-green-900 font-semibold mb-1">✅ Main editor now enabled</p>
+          <p className="text-green-800">
+            You can now edit, revise, or write your own story. Remember:
+            <br/>• You're <span className="font-semibold">not required</span> to use the AI-generated content
+            <br/>• You can continue using the AI to edit, refine, or create new drafts with different tones
+          </p>
+        </div>
+      )}
       <textarea
         ref={editorRef}
         value={text}
         onChange={(e) => setText(e.target.value)}
-        onPaste={(e)=>{ e.preventDefault(); }}
+        onPaste={(e)=>{ 
+          // Allow paste for AI groups, prevent for SELF groups
+          if (!isAI) {
+            e.preventDefault(); 
+          }
+        }}
         rows={18}
         className="w-full border rounded-xl p-3 focus:outline-none focus:ring h-full"
-        placeholder="Write here... (300-500 words)"
+        placeholder={isAI && !hasUsedAI ? "Please use the AI Assistant first..." : "Write here... (200-350 words)"}
         spellCheck="true"
+        disabled={isAI && !hasUsedAI}
+        style={isAI && !hasUsedAI ? { backgroundColor: '#f9fafb', cursor: 'not-allowed' } : {}}
       />
       <div className="mt-3 flex justify-between items-center text-xs text-gray-500">
         <div>Keystrokes captured: {keys.length}</div>
-        <div>Note: Copy and paste is disabled</div>
+        <div>{isAI ? 'Note: Copy and paste is allowed only within the page' : 'Note: Copy and paste is disabled'}</div>
       </div>
     </div>
   );
@@ -1321,17 +1408,17 @@ const EditorView: React.FC<{
           ) : (
             <button
               onClick={() => setShowConfirmation(true)}
-              disabled={wordCount < 10 || wordCount > 500}
+              disabled={wordCount < 10 || wordCount > 350}
               className={`px-4 py-2 rounded-xl ${
-                wordCount < 10 || wordCount > 500
+                wordCount < 10 || wordCount > 350
                   ? 'bg-gray-300 cursor-not-allowed'
                   : 'bg-black text-white'
               }`}
               title={
-                wordCount < 300 
-                  ? `Need ${300 - wordCount} more words` 
-                  : wordCount > 500 
-                    ? `Remove ${wordCount - 500} words` 
+                wordCount < 200 
+                  ? `Need ${200 - wordCount} more words` 
+                  : wordCount > 350 
+                    ? `Remove ${wordCount - 350} words` 
                     : ''
               }
             >
@@ -1362,31 +1449,31 @@ const EditorView: React.FC<{
                 {brainstormData.main_char && (
                   <div className="p-3 bg-blue-50 rounded-lg">
                     <div className="font-semibold text-blue-900 mb-1">Main Character</div>
-                    <div className="text-gray-700">{brainstormData.main_char}</div>
+                    <div className="text-gray-700 whitespace-pre-wrap">{brainstormData.main_char}</div>
                   </div>
                 )}
                 {brainstormData.setting && (
                   <div className="p-3 bg-green-50 rounded-lg">
                     <div className="font-semibold text-green-900 mb-1">Setting</div>
-                    <div className="text-gray-700">{brainstormData.setting}</div>
+                    <div className="text-gray-700 whitespace-pre-wrap">{brainstormData.setting}</div>
                   </div>
                 )}
                 {brainstormData.conflict && (
                   <div className="p-3 bg-orange-50 rounded-lg">
                     <div className="font-semibold text-orange-900 mb-1">Conflict</div>
-                    <div className="text-gray-700">{brainstormData.conflict}</div>
+                    <div className="text-gray-700 whitespace-pre-wrap">{brainstormData.conflict}</div>
                   </div>
                 )}
                 {brainstormData.resolution && (
                   <div className="p-3 bg-purple-50 rounded-lg">
                     <div className="font-semibold text-purple-900 mb-1">Resolution</div>
-                    <div className="text-gray-700">{brainstormData.resolution}</div>
+                    <div className="text-gray-700 whitespace-pre-wrap">{brainstormData.resolution}</div>
                   </div>
                 )}
                 {brainstormData.plot && (
                   <div className="p-3 bg-gray-50 rounded-lg md:col-span-2">
                     <div className="font-semibold text-gray-900 mb-1">Plot</div>
-                    <div className="text-gray-700">{brainstormData.plot}</div>
+                    <div className="text-gray-700 whitespace-pre-wrap">{brainstormData.plot}</div>
                   </div>
                 )}
               </div>
@@ -1405,38 +1492,111 @@ const EditorView: React.FC<{
 const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }>=({ meta: _meta, onSubmit })=>{
   const [q1, setQ1] = useState("");
   const [q2, setQ2] = useState("");
-  const [q3, setQ3] = useState("");
+  const [q3Items, setQ3Items] = useState<string[]>(["", ""]); // Start with 2 empty items
+  
+  const addQ3Item = () => {
+    setQ3Items([...q3Items, ""]);
+  };
+  
+  const removeQ3Item = (index: number) => {
+    if (q3Items.length > 1) { // Keep at least 1 item
+      setQ3Items(q3Items.filter((_, i) => i !== index));
+    }
+  };
+  
+  const updateQ3Item = (index: number, value: string) => {
+    const newItems = [...q3Items];
+    newItems[index] = value;
+    setQ3Items(newItems);
+  };
+
+  // Check if at least one q3 item is filled
+  const hasQ3Response = q3Items.some(item => item.trim().length > 0);
+  const canSubmit = q1 && q2 && hasQ3Response;
 
   return (
     <Shell
       title="Post-Session Survey"
       footer={
-        <button className="px-4 py-2 rounded-xl bg-black text-white" onClick={()=> onSubmit({ q1, q2, q3 })}>
+        <>
+          {!canSubmit && (
+            <div className="text-sm text-gray-600 text-center mb-2">
+              Please answer all questions to continue
+            </div>
+          )}
+          <button 
+            className={`px-4 py-2 rounded-xl ${
+              canSubmit 
+                ? 'bg-black text-white' 
+                : 'bg-gray-300 text-gray-600 cursor-not-allowed'
+            }`}
+            onClick={()=> onSubmit({ q1, q2, q3: q3Items })}
+            disabled={!canSubmit}
+          >
           Submit & Finish
         </button>
+        </>
       }
     >
       <div className="space-y-4">
         <div className="text-sm text-gray-600">Thank you! A few quick questions:</div>
         <label className="block">
-          <div className="mb-1 font-medium">How difficult was the task?</div>
+          <div className="mb-1 font-medium">How familiar are you with using AI for general tasks? (i.e., what is your level of expertise in using AI?)</div>
           <select className="w-full border rounded-xl p-2" value={q1} onChange={(e)=>setQ1(e.target.value)}>
             <option value="">Select…</option>
-            <option>Very easy</option>
-            <option>Easy</option>
-            <option>Moderate</option>
-            <option>Hard</option>
-            <option>Very hard</option>
+            <option>Not at all familiar</option>
+            <option>Slightly familiar</option>
+            <option>Somewhat familiar</option>
+            <option>Very familiar</option>
+            <option>Extremely familiar</option>
           </select>
         </label>
         <label className="block">
-          <div className="mb-1 font-medium">Briefly describe your approach:</div>
-          <textarea className="w-full border rounded-xl p-2" rows={5} value={q2} onChange={(e)=>setQ2(e.target.value)} />
+          <div className="mb-1 font-medium">How familiar are you with using <span className="font-semibold">AI for writing (creative or otherwise)</span>?</div>
+          <select className="w-full border rounded-xl p-2" value={q2} onChange={(e)=>setQ2(e.target.value)}>
+            <option value="">Select…</option>
+            <option>Not at all familiar</option>
+            <option>Slightly familiar</option>
+            <option>Somewhat familiar</option>
+            <option>Very familiar</option>
+            <option>Extremely familiar</option>
+          </select>
         </label>
-        <label className="block">
-          <div className="mb-1 font-medium">Any feedback on the interface?</div>
-          <textarea className="w-full border rounded-xl p-2" rows={4} value={q3} onChange={(e)=>setQ3(e.target.value)} />
-        </label>
+        <div className="block">
+          <div className="mb-2 font-medium">What aspects would you look out for to determine if a piece of writing is AI-generated?</div>
+          <div className="text-xs text-gray-500 mb-2">Add one aspect per line. You can add or remove lines as needed. Please add at least one aspect.</div>
+          <div className="space-y-2">
+            {q3Items.map((item, index) => (
+              <div key={index} className="flex gap-2 items-center">
+                <input
+                  type="text"
+                  className="flex-1 border rounded-lg p-2 text-sm"
+                  placeholder={`Aspect ${index + 1}`}
+                  value={item}
+                  onChange={(e) => updateQ3Item(index, e.target.value)}
+                />
+                <button
+                  onClick={() => removeQ3Item(index)}
+                  disabled={q3Items.length === 1}
+                  className={`px-3 py-2 rounded-lg text-sm ${
+                    q3Items.length === 1
+                      ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                      : 'bg-red-100 text-red-600 hover:bg-red-200'
+                  }`}
+                  title="Remove this item"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={addQ3Item}
+              className="px-3 py-2 rounded-lg text-sm bg-blue-100 text-blue-600 hover:bg-blue-200"
+            >
+              + Add another aspect
+            </button>
+          </div>
+        </div>
       </div>
     </Shell>
   );
@@ -1454,8 +1614,8 @@ const StudyApp: React.FC = () => {
   const [attentionMeta, setAttentionMeta] = useState<any>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
 
-  // Attention tracking for editor step only
-  const attn = useWritingAttention(step === 4, {
+  // Attention tracking for brainstorm (step 3) and editor (step 4)
+  const attn = useWritingAttention(step === 3 || step === 4, {
     graceMs: 3000,
     halfLifeMs: 12000,
     nudgeThreshold: 0.5,
@@ -1476,7 +1636,7 @@ const StudyApp: React.FC = () => {
     
     const init = async () => {
       try {
-        const prolificId = getProlificIdFromURL();
+      const prolificId = getProlificIdFromURL();
         
         // Debug: Check environment variables
         console.log('🔍 Debug Info:');
@@ -1485,17 +1645,17 @@ const StudyApp: React.FC = () => {
         console.log('Supabase client:', supabase ? '✅ Created' : '❌ Failed');
         
         // Check participant status and assign group
-        const group = await assignGroupBalanced(prolificId);
-        const startedAt = todayISO();
+      const group = await assignGroupBalanced(prolificId);
+      const startedAt = todayISO();
         
         // Ensure participant exists in database and start session
         await ensureParticipant(prolificId, group);
         const sid = await startSession(prolificId);
         console.log('Session ID:', sid);
         
-        setMeta({ prolificId, group, startedAt });
+      setMeta({ prolificId, group, startedAt });
         setSessionId(sid);
-        setLoaded(true);
+      setLoaded(true);
       } catch (error: any) {
         console.error('❌ Failed to initialize session:', error);
         
@@ -1579,22 +1739,22 @@ const StudyApp: React.FC = () => {
         console.error('❌ No session ID available for submission');
       }
       
-      // Persist locally and update balancing counts as a placeholder for server submission
-      LocalStats.increment(meta.group);
-      LocalStats.markCompleted(meta.prolificId);
+    // Persist locally and update balancing counts as a placeholder for server submission
+    LocalStats.increment(meta.group);
+    LocalStats.markCompleted(meta.prolificId);
 
       // Bundle session payload (for console logging/debugging)
-      const payload = {
-        meta,
+    const payload = {
+      meta,
         sessionId, // Include Supabase session ID
-        brainstorm,
-        finalText,
-        aiTranscript,
-        survey,
+      brainstorm,
+      finalText,
+      aiTranscript,
+      survey,
         attentionMeta, // Include attention tracking data
-        finishedAt: todayISO(),
-      };
-      console.log("[SUBMIT] session payload", payload);
+      finishedAt: todayISO(),
+    };
+    console.log("[SUBMIT] session payload", payload);
 
     } catch (error) {
       console.error('❌ Failed to submit study data:', error);
@@ -1672,6 +1832,52 @@ const StudyApp: React.FC = () => {
 {step === 3 && (
   <ComplianceGate 
   onViolation={(n) => console.log("Violation", n)}>
+    {/* Attention warnings for brainstorm phase */}
+    {attn.showFinalWarning && (
+      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-orange-500 text-white px-6 py-3 rounded-lg shadow-lg text-center max-w-md">
+        <div className="font-bold">⚠️ Final Warning</div>
+        <div className="text-sm">We need your full attention. Please stay focused or your session may be invalidated.</div>
+      </div>
+    )}
+    
+    {attn.finalStrike && (
+      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white px-6 py-3 rounded-lg shadow-lg text-center max-w-md">
+        <div className="font-bold">❌ Session Invalidated</div>
+        <div className="text-sm">Your submission may not be approved due to insufficient attention.</div>
+      </div>
+    )}
+    
+    {attn.showNudge && !attn.showFinalWarning && !attn.finalStrike && (
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-black text-white text-xs px-3 py-2 rounded-lg opacity-90">
+        Still with us? A quick keystroke or scroll helps.
+      </div>
+    )}
+
+    {/* Development mode attention score display */}
+    {DEV_MODE && (
+      <div className="fixed top-16 right-4 z-50 bg-gray-900 text-white p-3 rounded-lg text-sm font-mono shadow-lg">
+        <div className="text-xs text-gray-300 mb-1">Attention Score (Dev Mode)</div>
+        <div className="flex items-center gap-2">
+          <div className="w-20 h-2 bg-gray-700 rounded-full overflow-hidden">
+            <div 
+              className={`h-full transition-all duration-300 ${
+                attn.score > 0.7 ? 'bg-green-500' : 
+                attn.score > 0.5 ? 'bg-yellow-500' : 
+                attn.score > 0.35 ? 'bg-orange-500' : 'bg-red-500'
+              }`}
+              style={{ width: `${attn.score * 100}%` }}
+            />
+          </div>
+          <span className="text-xs">{(attn.score * 100).toFixed(0)}%</span>
+        </div>
+        <div className="text-xs text-gray-400 mt-1">
+          Nudges: {attn.nudges} | Worst: {(attn.worstScore * 100).toFixed(0)}%
+          {attn.showFinalWarning && <span className="text-orange-400"> | FINAL WARNING</span>}
+          {attn.finalStrike && <span className="text-red-400"> | STRIKE</span>}
+        </div>
+      </div>
+    )}
+    
     <BrainstormView meta={meta} value={brainstorm} setValue={setBrainstorm} sessionId={sessionId} onNext={()=> setStep(4)} />
   </ComplianceGate>
 )}
