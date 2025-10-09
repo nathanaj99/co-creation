@@ -25,7 +25,7 @@ import { supabase } from './lib/supabase';
 */
 
 // Development mode - set to true to disable all timers for faster development
-const DEV_MODE = true;
+const DEV_MODE = false;
 
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
@@ -856,7 +856,7 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
         className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
         placeholder={meta.group.includes("DIV")?"Placeholder...":"Placeholder..."}
       /> */}
-      <p className="mb-3 text-sm text-gray-600">Outline your story plan below. Use as many of the boxes as you find necessary. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>!</p>
+      <p className="mb-3 text-sm text-gray-600">Outline your story plan below. Use as many of the boxes as you find necessary. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>! Remember, the story should be <span className="font-semibold">200-350 words.</span></p>
 <div className="flex flex-col gap-4">
 <div>
 <label className="block mb-1 text-sm font-medium text-gray-700">Quick Ideas</label>
@@ -981,7 +981,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
       <>
         <p className="text-lg mb-4 font-semibold">You are participating in a short story competition.</p>
         <p className="mb-2">There are thousands of submissions, so <span className="font-bold">your goal is to stand out</span> as much as possible. 
-          Find your voice and be as creative as possible! The short story should be around 300–500 words.</p>
+          Find your voice and be as creative as possible! The short story should be 200-350 words.</p>
         <p className="mt-4 text-red-600">In other words, your <u>bonus</u> will be determined based on <span className="font-bold">originality and uniqueness.</span></p>
         <table className="w-full my-4 border-collapse">
           <thead>
@@ -1015,7 +1015,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
     : (
       <>
         <p className="text-lg mb-4 font-semibold">You are starting an Intro to Writing class.</p>
-        <p className="mb-2">Your first assignment is to create a 300-500 word short story. 
+        <p className="mb-2">Your first assignment is to create a 200-350 word short story. 
           Your goal is to get an A by submitting a high-quality piece of work; there is no limit to the number of A's the teacher gives!</p>
         <p className="mt-4 text-red-600">In other words, your <u>bonus</u> will be determined based on <span className="font-bold">the grade you receive.</span></p>
         <table className="w-full my-4 border-collapse">
