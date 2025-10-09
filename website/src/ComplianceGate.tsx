@@ -31,9 +31,9 @@ export const ComplianceGate: React.FC<{
             <button className="px-4 py-2 rounded-xl bg-black text-white" onClick={resume}>
               Re-enter Fullscreen & Continue
             </button>
-            <p className="text-xs text-gray-500 mt-2">
+            {/* <p className="text-xs text-gray-500 mt-2">
               (Developer escape: press <span className="font-mono">Ctrl+Shift+E</span> five times quickly)
-            </p>
+            </p> */}
           </div>
         </div>
       )}

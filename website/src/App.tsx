@@ -25,7 +25,7 @@ import { supabase } from './lib/supabase';
 */
 
 // Development mode - set to true to disable all timers for faster development
-const DEV_MODE = true;
+const DEV_MODE = false;
 
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
@@ -537,12 +537,14 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
       }
     >
       <div className="space-y-4">
-        <div className="text-sm text-gray-600">
-          Participant: <span className="font-mono">{meta.prolificId}</span> · Group: <span className="font-mono">{meta.group}</span>
-          {DEV_MODE && sessionId && (
-            <> · Session: <span className="font-mono text-xs">{sessionId}</span></>
-          )}
-        </div>
+        {DEV_MODE && (
+          <div className="text-sm text-gray-600">
+            Participant: <span className="font-mono">{meta.prolificId}</span> · Group: <span className="font-mono">{meta.group}</span>
+            {sessionId && (
+              <> · Session: <span className="font-mono text-xs">{sessionId}</span></>
+            )}
+          </div>
+        )}
         <p className="leading-relaxed">
           Welcome! You'll complete a short creative writing task for a research study. Your screen time and key presses are
           recorded for research purposes only. Please read the instructions carefully.
