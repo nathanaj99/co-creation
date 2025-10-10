@@ -346,6 +346,12 @@ async function checkParticipantStatus(prolificId: string): Promise<{
 
 // ---- Group randomization with balancing ----
 async function assignGroupBalanced(prolificId: string): Promise<GroupKey> {
+  // Special case: TEST participant always gets AI-DIV
+  if (prolificId.includes('TEST')) {
+    console.log('🧪 TEST participant detected - assigning to AI-DIV');
+    return 'AI-DIV';
+  }
+  
   // 1) Check participant status
   const status = await checkParticipantStatus(prolificId);
   
@@ -1214,7 +1220,6 @@ const EditorView: React.FC<{
   const [text, setText] = useState("");
   const [aiMessages, setAiMessages] = useState<{role:"user"|"assistant"; content:string}[]>([]);
   const [chatDraft, setChatDraft] = useState(""); // Lift chat input state
-  const [keys, setKeys] = useState<{t:string; k:string}[]>([]);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const [timeRemaining, setTimeRemaining] = useState(DEV_MODE ? 0 : 20 * 60); // 20 minutes in seconds
   const [showReminder, setShowReminder] = useState<false | '5min' | '1min'>(false);
@@ -1260,15 +1265,6 @@ const EditorView: React.FC<{
   };
 
   const isAI = meta.group.startsWith("AI");
-
-  // Keystroke logging scaffold (for internal tracking)
-  useEffect(()=>{
-    const handler = (e: KeyboardEvent) => {
-      setKeys((prev)=> prev.length < 5000 ? [...prev, { t: new Date().toISOString(), k: e.key }] : prev);
-    };
-    window.addEventListener("keydown", handler);
-    return ()=> window.removeEventListener("keydown", handler);
-  }, []);
 
   // Refs to access current values without triggering re-renders
   const textRef = useRef(text);
@@ -1333,11 +1329,16 @@ const EditorView: React.FC<{
       }, 30000);
     }
     
+    // Save snapshot of the chat prompt when user submits
+    if (sessionId) {
+      saveSnapshot(sessionId, 'writing', 'chat', message);
+    }
+    
     // Placeholder: append user message and a fake assistant reply
     setAiMessages((msgs)=>[...msgs, { role:"user", content: message }]);
     // ---- Replace below with your API call ----
     if (!DEV_MODE) {
-    await new Promise((r)=>setTimeout(r, 300));
+      await new Promise((r)=>setTimeout(r, 300));
     }
     setAiMessages((msgs)=>[...msgs, { role:"assistant", content: "[placeholder] API not connected yet. Your note: " + message }]);
   };
@@ -1390,8 +1391,7 @@ const EditorView: React.FC<{
         disabled={isAI && !hasUsedAI}
         style={isAI && !hasUsedAI ? { backgroundColor: '#f9fafb', cursor: 'not-allowed' } : {}}
       />
-      <div className="mt-3 flex justify-between items-center text-xs text-gray-500">
-        <div>Keystrokes captured: {keys.length}</div>
+      <div className="mt-3 flex justify-end items-center text-xs text-gray-500">
         <div>{isAI ? 'Note: Copy and paste is allowed only within the page' : 'Note: Copy and paste is disabled'}</div>
       </div>
     </div>
