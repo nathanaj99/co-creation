@@ -319,19 +319,28 @@ async function checkParticipantStatus(prolificId: string): Promise<{
         .eq('phase', 'writing')
         .limit(1);
 
+      console.log('📡 Writing phase snapshot check:', {
+        sessionIds,
+        snapshots: writingSnapshot,
+        error: snapError,
+        found: writingSnapshot && writingSnapshot.length > 0
+      });
+
       if (snapError) {
         console.error('Error checking snapshots:', snapError);
         return { canProceed: true, existingGroup: participant.group_key };
       }
 
       if (writingSnapshot && writingSnapshot.length > 0) {
-        console.log('🚫 Participant has started writing phase');
+        console.log('🚫 Participant has started writing phase - BLOCKING');
         return { 
           canProceed: false, 
           reason: 'writing_started',
           existingGroup: participant.group_key
         };
       }
+      
+      console.log('✅ No writing snapshots found - allowing restart');
     }
 
     // Participant exists but hasn't reached writing phase - allow restart with same group
@@ -346,18 +355,20 @@ async function checkParticipantStatus(prolificId: string): Promise<{
 
 // ---- Group randomization with balancing ----
 async function assignGroupBalanced(prolificId: string): Promise<GroupKey> {
-  // Special case: TEST participant always gets AI-DIV
-  if (prolificId.includes('TEST')) {
-    console.log('🧪 TEST participant detected - assigning to AI-DIV');
-    return 'AI-DIV';
-  }
-  
+
   // 1) Check participant status
   const status = await checkParticipantStatus(prolificId);
   
   if (!status.canProceed) {
     throw new Error(status.reason || 'cannot_proceed');
   }
+  
+  // Special case: TEST participant always gets AI-DIV
+  if (prolificId.includes('TEST')) {
+    console.log('🧪 TEST participant detected - assigning to AI-DIV');
+    return 'AI-DIV';
+  }
+
 
   // If participant exists with a group, reuse it
   if (status.existingGroup) {
@@ -633,6 +644,9 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
                   </p>
                   <p className="text-red-600 mt-2">
                     Unfortunately, we cannot proceed with the study if participants do not understand the key requirements.
+                  </p>
+                  <p className="text-red-600 mt-3">
+                    Please <a href="https://app.prolific.com/submissions/complete?cc=C246RY97" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: <span className="font-mono font-bold">C246RY97</span>.
                   </p>
                 </div>
               )}
@@ -1089,8 +1103,8 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
                 <p className="text-red-600 mt-2">
                   Unfortunately, we cannot proceed with the study. You have been removed from participation.
                 </p>
-                <p className="text-red-600 mt-2 text-sm">
-                  Please close this window and return the study on Prolific.
+                <p className="text-red-600 mt-3">
+                  Please <a href="https://app.prolific.com/submissions/complete?cc=C246RY97" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: <span className="font-mono font-bold">C246RY97</span>.
                 </p>
               </div>
             </div>
@@ -1664,12 +1678,54 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
   );
 };
 
+// ---- Device Compatibility Check ----
+function checkDeviceCompatibility(): { compatible: boolean; reason?: string } {
+  // Check 1: Screen size (minimum 1024px width for laptop/desktop)
+  const minWidth = 1024;
+  const minHeight = 600;
+  const screenWidth = window.screen.width;
+  const screenHeight = window.screen.height;
+  
+  if (screenWidth < minWidth || screenHeight < minHeight) {
+    return { 
+      compatible: false, 
+      reason: `Screen size too small. This study requires a laptop or desktop with at least ${minWidth}x${minHeight} resolution. Your device: ${screenWidth}x${screenHeight}.` 
+    };
+  }
+  
+  // Check 2: Touch-only devices (tablets and phones typically only have touch)
+  const isTouchOnly = ('ontouchstart' in window || navigator.maxTouchPoints > 0) 
+    && !window.matchMedia('(pointer: fine)').matches;
+  
+  if (isTouchOnly) {
+    return { 
+      compatible: false, 
+      reason: 'This study requires a laptop or desktop computer with a keyboard and mouse. Touch-only devices (tablets and phones) are not supported.' 
+    };
+  }
+  
+  // Check 3: User agent detection (fallback)
+  const userAgent = navigator.userAgent.toLowerCase();
+  const mobileKeywords = ['android', 'webos', 'iphone', 'ipad', 'ipod', 'blackberry', 'windows phone'];
+  const isMobileUA = mobileKeywords.some(keyword => userAgent.includes(keyword));
+  
+  if (isMobileUA) {
+    return { 
+      compatible: false, 
+      reason: 'This study requires a laptop or desktop computer. Mobile devices and tablets are not supported.' 
+    };
+  }
+  
+  return { compatible: true };
+}
+
 // ---- Root App ----
 const StudyApp: React.FC = () => {
   const [loaded, setLoaded] = useState(false);
   const [step, setStep] = useState<Step>(1);
   const [meta, setMeta] = useState<SessionMeta | null>(null);
   const [blocked, setBlocked] = useState<string | null>(null); // Track if participant is blocked
+  const [deviceIncompatible, setDeviceIncompatible] = useState<string | null>(null); // Track device compatibility
   const [brainstorm, setBrainstorm] = useState("");
   const [finalText, setFinalText] = useState("");
   const [aiTranscript, setAiTranscript] = useState<{role:"user"|"assistant"; content:string}[]>([]);
@@ -1712,7 +1768,16 @@ const StudyApp: React.FC = () => {
     
     const init = async () => {
       try {
-      const prolificId = getProlificIdFromURL();
+        // Check device compatibility first
+        const deviceCheck = checkDeviceCompatibility();
+        if (!deviceCheck.compatible) {
+          console.log('🚫 Device incompatible:', deviceCheck.reason);
+          setDeviceIncompatible(deviceCheck.reason || 'Device not compatible');
+          setLoaded(true);
+          return;
+        }
+        
+        const prolificId = getProlificIdFromURL();
         
         // Debug: Check environment variables
         console.log('🔍 Debug Info:');
@@ -1720,18 +1785,26 @@ const StudyApp: React.FC = () => {
         console.log('VITE_SUPABASE_ANON:', import.meta.env.VITE_SUPABASE_ANON ? '✅ Set' : '❌ Missing');
         console.log('Supabase client:', supabase ? '✅ Created' : '❌ Failed');
         
+        // Halt if Supabase is not available
+        if (!supabase || !supabase.from || !import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON) {
+          console.error('❌ Supabase not properly configured - halting study');
+          setBlocked('supabase_error');
+          setLoaded(true);
+          return;
+        }
+        
         // Check participant status and assign group
-      const group = await assignGroupBalanced(prolificId);
-      const startedAt = todayISO();
+        const group = await assignGroupBalanced(prolificId);
+        const startedAt = todayISO();
         
         // Ensure participant exists in database and start session
         await ensureParticipant(prolificId, group);
         const sid = await startSession(prolificId);
         console.log('Session ID:', sid);
         
-      setMeta({ prolificId, group, startedAt });
+        setMeta({ prolificId, group, startedAt });
         setSessionId(sid);
-      setLoaded(true);
+        setLoaded(true);
       } catch (error: any) {
         console.error('❌ Failed to initialize session:', error);
         
@@ -1741,12 +1814,9 @@ const StudyApp: React.FC = () => {
           setBlocked(error.message);
           setLoaded(true);
         } else {
+          // For any other error, halt the study with error message
           console.error('Error details:', error);
-          // For other errors, try fallback
-          const prolificId = getProlificIdFromURL();
-          const group = await assignGroupBalanced(prolificId);
-          const startedAt = todayISO();
-          setMeta({ prolificId, group, startedAt });
+          setBlocked('initialization_error');
           setLoaded(true);
         }
       }
@@ -1845,7 +1915,7 @@ const StudyApp: React.FC = () => {
     <Shell title="All set!">
       <div className="prose max-w-none">
         <h2 className="text-xl font-semibold">Thanks for participating! 🎉</h2>
-        <p>Your responses have been recorded. You can now return to Prolific.</p>
+        <p>Your responses have been recorded. You can now return to Prolific <a href="https://app.prolific.com/submissions/complete?cc=C13IMUFI" className="text-blue-600 underline">using this link</a>. Alternatively, copy and paste this code: C13IMUFI.</p>
         {meta?.prolificId && (
           <p className="text-sm text-gray-600">Prolific ID: <span className="font-mono">{meta.prolificId}</span></p>
         )}
@@ -1855,7 +1925,12 @@ const StudyApp: React.FC = () => {
 
   // Blocked participant screen
   const BlockedScreen = (
-    <Shell title={blocked === 'banned' ? 'Access Denied' : 'Already Participated'}>
+    <Shell title={
+      blocked === 'banned' ? 'Access Denied' : 
+      blocked === 'supabase_error' ? 'Configuration Error' :
+      blocked === 'initialization_error' ? 'System Error' :
+      'Already Participated'
+    }>
       <div className="prose max-w-none">
         {blocked === 'banned' ? (
           <>
@@ -1864,7 +1939,27 @@ const StudyApp: React.FC = () => {
               You have been removed from this study due to failing attention checks.
             </p>
             <p className="text-gray-600">
-              Please close this window and return the study on Prolific.
+              Please <a href="https://app.prolific.com/submissions/complete?cc=C1KB1MCD" className="text-blue-600 underline">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C1KB1MCD.
+            </p>
+          </>
+        ) : blocked === 'supabase_error' ? (
+          <>
+            <h2 className="text-xl font-semibold text-red-600">Study Temporarily Unavailable</h2>
+            <p className="text-red-600">
+              The study system is not properly configured. Data tracking is required for this study.
+            </p>
+            <p className="text-gray-600">
+              Please contact the researcher, refresh the page, or try again later. If you decide to try later, <a href="https://app.prolific.com/submissions/complete?cc=C182OX5Y" className="text-blue-600 underline">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C182OX5Y.
+            </p>
+          </>
+        ) : blocked === 'initialization_error' ? (
+          <>
+            <h2 className="text-xl font-semibold text-red-600">Unable to Start Study</h2>
+            <p className="text-red-600">
+              An error occurred while initializing your session.
+            </p>
+            <p className="text-gray-600">
+              Please contact the researcher with your Prolific ID or try refreshing the page. If you decide to try later, <a href="https://app.prolific.com/submissions/complete?cc=C182OX5Y" className="text-blue-600 underline">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C182OX5Y.
             </p>
           </>
         ) : (
@@ -1872,10 +1967,7 @@ const StudyApp: React.FC = () => {
             <h2 className="text-xl font-semibold text-red-600">Study Already Completed</h2>
             <p>
               Our records show that you have already {blocked === 'already_completed' ? 'completed' : 'started'} this study.
-              Each participant can only complete the study once.
-            </p>
-            <p className="text-gray-600">
-              Thank you for your interest! Please return to Prolific and mark this study as complete if you have already submitted it.
+              Each participant can only complete the study once. If you started writing but abandoned the session, we sadly cannot allow you to restart. <a href="https://app.prolific.com/submissions/complete?cc=C16B0MLX" className="text-blue-600 underline">Click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C16B0MLX.
             </p>
             <div className="mt-6 p-4 bg-blue-50 rounded-lg">
               <p className="text-sm font-semibold">If you believe this is an error:</p>
@@ -1904,7 +1996,7 @@ const StudyApp: React.FC = () => {
         <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
           <p className="font-semibold text-red-800 mb-2">What to do next:</p>
           <p className="text-sm text-red-700">
-            Please close this window and return the study on Prolific.
+            Please close this window and return the study on Prolific <a href="https://app.prolific.com/submissions/complete?cc=C8IDGK63" className="text-blue-600 underline">using this link</a>. Alternatively, copy and paste this code: C8IDGK63.
             Your participation data has been recorded as incomplete.
           </p>
         </div>
@@ -1912,7 +2004,45 @@ const StudyApp: React.FC = () => {
     </Shell>
   );
 
+  // Device incompatible screen
+  const DeviceIncompatibleScreen = (
+    <Shell title="Device Not Compatible">
+      <div className="prose max-w-none text-center">
+        <div className="mb-6">
+          <div className="text-6xl mb-4">💻</div>
+          <h2 className="text-2xl font-bold text-red-600 mb-4">Device Not Compatible</h2>
+        </div>
+        <p className="text-red-600 mb-4 font-semibold">
+          {deviceIncompatible}
+        </p>
+        <p className="text-gray-700 mb-6">
+          This study requires specific hardware capabilities for accurate data collection and optimal user experience.
+        </p>
+        <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg mb-4">
+          <p className="font-semibold text-blue-800 mb-2">Requirements:</p>
+          <ul className="text-sm text-blue-700 text-left list-disc list-inside">
+            <li>Laptop or desktop computer</li>
+            <li>Physical keyboard and mouse</li>
+            <li>Minimum screen resolution: 1024x600</li>
+            <li>Not a tablet or mobile device</li>
+          </ul>
+        </div>
+        <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+          <p className="font-semibold text-red-800 mb-2">What to do next:</p>
+          <p className="text-sm text-red-700">
+            Please <a href="https://app.prolific.com/submissions/complete?cc=C1BQO66A" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: <span className="font-mono font-bold">C1BQO66A</span>.
+          </p>
+          <p className="text-sm text-gray-600 mt-3">
+            If you have access to a compatible device, you may try again from that device.
+          </p>
+        </div>
+      </div>
+    </Shell>
+  );
+
   if (!loaded) return <div className="p-6 text-gray-500">Loading…</div>;
+  
+  if (deviceIncompatible) return DeviceIncompatibleScreen;
   
   if (blocked) return BlockedScreen;
   
