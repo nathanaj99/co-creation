@@ -453,9 +453,8 @@ const Shell: React.FC<{ title: string; children: React.ReactNode; footer?: React
       </div>
     )}
     <div className="max-w-5xl mx-auto px-4 py-6">
-      <header className="flex items-center justify-between mb-6">
+      <header className="mb-6">
         <h1 className="text-2xl font-bold">{title}</h1>
-        <div className="text-sm opacity-70">Prolific Study Prototype</div>
       </header>
       <main className="bg-white rounded-2xl shadow p-6">{children}</main>
       {footer && <footer className="mt-6 flex justify-end">{footer}</footer>}
@@ -557,7 +556,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
             {meta.group.includes("SELF") ? (
               <li><span className="font-bold">Do not use external AI tools</span> (e.g., Google, ChatGPT). We will be monitoring for prohibited AI usage using keystroke data, attention checks, and your final responses. <span className="font-bold text-red-500">If you are caught using AI, we will reject your submission.</span></li>
             ) : (
-              <li>You are provided an in-app AI tool to aid in your creative writing task; in fact you are <span className="font-bold">required to use the AI tool when prompted.</span> However, oftentimes the AI tool will not achieve the quality you desire. We encourage you to use the AI tool as a stepping stone and as a helper, but <span className="font-bold">ultimately you are expected to write your own story.</span> Please do not use external AI tools that we do not provide to you.</li>
+              <li>You are provided an in-app AI tool to aid in your creative writing task; in fact you are <span className="font-bold">required to use the AI tool when prompted.</span> However, oftentimes the AI tool will not achieve the quality you desire. We encourage you to use the AI tool as a stepping stone and as a helper, but <span className="font-bold">ultimately you are responsible for your own story.</span> Please do not use external AI tools that we do not provide to you.</li>
             )}
             <li>Stay on the page; progress may not be saved if you navigate away.</li>
             <li>Be thoughtful and authentic in your responses!</li>
@@ -659,6 +658,7 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
     valueRef.current = value;
   }, [value]);
 
+  // Timer countdown effect
   React.useEffect(() => {
     if (!DEV_MODE && timeRemaining > 0) {
       const timer = setTimeout(() => {
@@ -676,10 +676,24 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
         });
       }, 1000);
       return () => clearTimeout(timer);
-    } else if (!DEV_MODE && timeRemaining === 0) {
+    }
+  }, [timeRemaining]); // Only depend on timeRemaining
+  
+  // Auto-advance when timer expires
+  React.useEffect(() => {
+    if (!DEV_MODE && timeRemaining === 0) {
+      // Save brainstorm data when time runs out
+      const brainstormData = JSON.stringify({
+        main_char,
+        setting,
+        conflict,
+        resolution,
+        plot
+      });
+      setValue(brainstormData);
       onNext(); // Force proceed when time is up (only in production)
     }
-  }, [timeRemaining]);
+  }, [timeRemaining]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Refs to track current brainstorm values without triggering re-renders
   const brainstormRefs = React.useRef({
@@ -766,17 +780,6 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
       title="Step 1 · Brainstorm"
       footer={
         <div className="flex flex-col items-center gap-4">
-          <div 
-            className={`px-6 py-3 rounded-lg font-bold text-lg ${
-              timeRemaining <= 30 
-                ? 'bg-red-100 text-red-700 border-2 border-red-500' 
-                : timeRemaining <= 120 
-                  ? 'bg-yellow-100 text-yellow-700 border-2 border-yellow-500'
-                  : 'bg-blue-100 text-blue-700 border-2 border-blue-500'
-            }`}
-          >
-            ⏱️ Time Remaining: {formatTime(timeRemaining)}
-          </div>
           {showReminder && (
             <div className="bg-yellow-100 border-2 border-yellow-400 text-yellow-700 px-6 py-3 rounded-lg text-base font-semibold animate-pulse">
               {showReminder === '2min'
@@ -848,18 +851,26 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
         </div>
       }
     >
-      {/* <p className="mb-3 text-sm text-gray-600">Outline your story plan. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>!</p>
-      <textarea
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        rows={12}
-        className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
-        placeholder={meta.group.includes("DIV")?"Placeholder...":"Placeholder..."}
-      /> */}
-      <p className="mb-3 text-sm text-gray-600">Outline your story plan below. Use as many of the boxes as you find necessary. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>! Remember, the story should be <span className="font-semibold">200-350 words.</span></p>
-<div className="flex flex-col gap-4">
-<div>
-<label className="block mb-1 text-sm font-medium text-gray-700">Quick Ideas</label>
+      {/* Timer - Fixed to top-right */}
+      <div className="fixed top-4 right-4 z-40">
+        <div 
+          className={`px-4 py-2 rounded-lg font-bold text-base shadow-lg ${
+            timeRemaining <= 30 
+              ? 'bg-red-100 text-red-700 border-2 border-red-500' 
+              : timeRemaining <= 120 
+                ? 'bg-yellow-100 text-yellow-700 border-2 border-yellow-500'
+                : 'bg-blue-100 text-blue-700 border-2 border-blue-500'
+          }`}
+        >
+          ⏱️ {formatTime(timeRemaining)}
+        </div>
+      </div>
+      
+      <p className="mb-4 text-sm text-gray-600">Outline your story plan below. Use as many of the boxes as you find necessary. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>! Remember, the story should be <span className="font-semibold">200-350 words.</span></p>
+
+{/* Quick Ideas Section */}
+<div className="mb-6">
+<h2 className="text-xl font-bold mb-3 text-gray-800">Quick Ideas</h2>
 <textarea
 value={quick_ideas}
 onChange={(e) => set_quick_ideas(e.target.value)}
@@ -869,6 +880,11 @@ className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="Jot down as many ideas for a story you have."
 />
 </div>
+
+{/* Outline Section */}
+<div>
+<h2 className="text-xl font-bold mb-4 text-gray-800">Outline</h2>
+<div className="flex flex-col gap-4">
 
 <div>
 <label className="block mb-1 text-sm font-medium text-gray-700">Main Character</label>
@@ -938,7 +954,9 @@ className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="Summarize the main events or structure."
 />
 </div>
-</div>
+
+</div> {/* End Outline section */}
+</div> {/* End Outline wrapper */}
     </Shell>
   );
 };
@@ -1008,7 +1026,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
         </table>
         <div className="my-10"></div>
         <p className="mb-2 text-gray-500 italic">
-          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After 30 seconds of inactivity, your story will be automatically submitted.
+          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After 30 seconds of inactivity, we will flag your submission for manual review.
         </p>
       </>
     )
@@ -1043,7 +1061,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
         </table>
         <div className="my-10"></div>
         <p className="mb-2 text-gray-500 italic">
-          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After 30 seconds of inactivity, your story will be automatically submitted.
+          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After 30 seconds of inactivity, we will flag your submission for manual review.
         </p>
         
       </>
@@ -1094,21 +1112,21 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
                     <input
                       type="radio"
                       name="bonus"
-                      value={isDiv ? "originality" : "grade"}
-                      checked={selectedOption === (isDiv ? "originality" : "grade")}
-                      onChange={(e) => setSelectedOption(e.target.value)}
-                    />
-                    {isDiv ? "Originality and uniqueness" : "The grade I receive"}
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
-                      name="bonus"
                       value={isDiv ? "grade" : "originality"}
                       checked={selectedOption === (isDiv ? "grade" : "originality")}
                       onChange={(e) => setSelectedOption(e.target.value)}
                     />
                     {isDiv ? "The grade I receive" : "Originality and uniqueness"}
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="bonus"
+                      value={isDiv ? "originality" : "grade"}
+                      checked={selectedOption === (isDiv ? "originality" : "grade")}
+                      onChange={(e) => setSelectedOption(e.target.value)}
+                    />
+                    {isDiv ? "Originality and uniqueness": "The grade I receive"}
                   </label>
                 </div>
               </div>
@@ -1138,10 +1156,19 @@ const AIChatPanel: React.FC<{
   draft: string,
   setDraft: (s:string)=>void
 }>=({ messages, onSend, draft, setDraft })=>{
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  }, [messages]);
+  
   return (
     <div className="h-full flex flex-col">
       <div className="font-semibold mb-2">AI Assistant</div>
-      <div className="flex-1 border rounded-xl p-3 overflow-y-auto space-y-3">
+      <div ref={chatContainerRef} className="border rounded-xl p-3 overflow-y-auto space-y-3 max-h-[800px]">
         {messages.length===0 && (
           <div className="text-sm text-gray-500">Ask the AI for a first draft or to edit. (Wire up your API in onSend)</div>
         )}
@@ -1163,17 +1190,16 @@ const AIChatPanel: React.FC<{
         <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={()=>{ if(draft.trim()){ onSend(draft.trim()); setDraft(""); } }}>Send</button>
       </div>
       
-      {/* AI Prompting Tips */}
-      <div className="mt-3 p-3 bg-gray-50 rounded-lg text-xs text-gray-700">
-        <div className="font-semibold mb-1">💡 Tips for prompting the AI:</div>
-        <ul className="space-y-1 list-disc list-inside">
-          <li>"Write a first draft about [your story idea]"</li>
-          <li>"Generate a creative opening paragraph for my story"</li>
+      {/* AI Prompting Tips - Collapsible */}
+      <details className="mt-3 p-3 bg-gray-50 rounded-lg text-xs text-gray-700">
+        <summary className="font-semibold cursor-pointer hover:text-gray-900">💡 Tips for prompting the AI (click to expand)</summary>
+        <ul className="mt-2 space-y-1 list-disc list-inside text-gray-600">
+          <li>"Write a first draft about [your story idea, including characters, setting, conflict, and resolution]"</li>
+          <li>"Generate a creative opening paragraph. My story is about [your story idea, including characters and setting]"</li>
           <li>"Help me develop the conflict between [character] and [obstacle]"</li>
-          <li>"Rewrite this paragraph in a more [dramatic/humorous/suspenseful] tone"</li>
-          <li>"Expand on this idea: [paste your brainstorm note]"</li>
+          <li>"Rewrite this paragraph in a more [dramatic/humorous/suspenseful] tone: [paragraph]"</li>
         </ul>
-      </div>
+      </details>
     </div>
   );
 };
@@ -1195,6 +1221,8 @@ const EditorView: React.FC<{
   const [wordCount, setWordCount] = useState(0);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [hasUsedAI, setHasUsedAI] = useState(false); // Track if user has interacted with AI
+  const [showEditorEnabledMessage, setShowEditorEnabledMessage] = useState(false); // Show the enabled message
+  const [showBrainstormOutline, setShowBrainstormOutline] = useState(true); // Control brainstorm visibility
   
   // Update word count whenever text changes
   useEffect(() => {
@@ -1298,6 +1326,11 @@ const EditorView: React.FC<{
     // Mark that user has interacted with AI
     if (!hasUsedAI) {
       setHasUsedAI(true);
+      setShowEditorEnabledMessage(true);
+      // Hide message after 30 seconds
+      setTimeout(() => {
+        setShowEditorEnabledMessage(false);
+      }, 30000);
     }
     
     // Placeholder: append user message and a fake assistant reply
@@ -1330,7 +1363,7 @@ const EditorView: React.FC<{
           <p className="text-blue-800">Use the AI panel on the right to generate a first draft or story components before editing here.</p>
         </div>
       )}
-      {isAI && hasUsedAI && (
+      {isAI && hasUsedAI && showEditorEnabledMessage && (
         <div className="mb-3 p-3 bg-green-50 border border-green-200 rounded-lg text-sm">
           <p className="text-green-900 font-semibold mb-1">✅ Main editor now enabled</p>
           <p className="text-green-800">
@@ -1369,17 +1402,6 @@ const EditorView: React.FC<{
       title="Step 2 · Writing"
       footer={
         <div className="flex flex-col items-center gap-4">
-          <div 
-            className={`px-6 py-3 rounded-lg font-bold text-lg ${
-              timeRemaining <= 60 
-                ? 'bg-red-100 text-red-700 border-2 border-red-500' 
-                : timeRemaining <= 300 
-                  ? 'bg-yellow-100 text-yellow-700 border-2 border-yellow-500'
-                  : 'bg-blue-100 text-blue-700 border-2 border-blue-500'
-            }`}
-          >
-            ⏱️ Time Remaining: {formatTime(timeRemaining)}
-          </div>
           {showReminder && (
             <div className="bg-yellow-100 border-2 border-yellow-400 text-yellow-700 px-6 py-3 rounded-lg text-base font-semibold animate-pulse">
               {showReminder === '5min' 
@@ -1406,28 +1428,60 @@ const EditorView: React.FC<{
               </div>
             </div>
           ) : (
-            <button
-              onClick={() => setShowConfirmation(true)}
-              disabled={wordCount < 10 || wordCount > 350}
-              className={`px-4 py-2 rounded-xl ${
-                wordCount < 10 || wordCount > 350
-                  ? 'bg-gray-300 cursor-not-allowed'
-                  : 'bg-black text-white'
-              }`}
-              title={
-                wordCount < 200 
-                  ? `Need ${200 - wordCount} more words` 
-                  : wordCount > 350 
-                    ? `Remove ${wordCount - 350} words` 
-                    : ''
-              }
-            >
-              Submit
-            </button>
+            <>
+              {(timeRemaining > 900 || wordCount < 200 || wordCount > 350) && (
+                <div className="text-sm text-gray-600 text-center">
+                  {timeRemaining > 900 && (
+                    <div>Please spend at least 5 minutes writing ({(20 * 60) - timeRemaining} / 300 seconds)</div>
+                  )}
+                  {wordCount < 200 && (
+                    <div>Required: 200-350 words (currently {wordCount} words)</div>
+                  )}
+                  {wordCount > 350 && (
+                    <div>Please reduce to 350 words or less (currently {wordCount} words)</div>
+                  )}
+                </div>
+              )}
+              <button
+                onClick={() => setShowConfirmation(true)}
+                disabled={timeRemaining > 900 || wordCount < 200 || wordCount > 350}
+                className={`px-4 py-2 rounded-xl ${
+                  timeRemaining > 900 || wordCount < 200 || wordCount > 350
+                    ? 'bg-gray-300 cursor-not-allowed'
+                    : 'bg-black text-white'
+                }`}
+                title={
+                  timeRemaining > 900
+                    ? `Please wait ${timeRemaining - 900} more seconds`
+                    : wordCount < 200 
+                      ? `Need ${200 - wordCount} more words` 
+                      : wordCount > 350 
+                        ? `Remove ${wordCount - 350} words` 
+                        : ''
+                }
+              >
+                Submit
+              </button>
+            </>
           )}
         </div>
       }
     >
+      {/* Timer - Fixed to top-right */}
+      <div className="fixed top-4 right-4 z-40">
+        <div 
+          className={`px-4 py-2 rounded-lg font-bold text-base shadow-lg ${
+            timeRemaining <= 60 
+              ? 'bg-red-100 text-red-700 border-2 border-red-500' 
+              : timeRemaining <= 300 
+                ? 'bg-yellow-100 text-yellow-700 border-2 border-yellow-500'
+                : 'bg-blue-100 text-blue-700 border-2 border-blue-500'
+          }`}
+        >
+          ⏱️ {formatTime(timeRemaining)}
+        </div>
+      </div>
+      
       {isAI ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 min-h-[520px]">
           <div>{EditorBox}</div>
@@ -1438,10 +1492,18 @@ const EditorView: React.FC<{
       ) : (
         <div className="min-h-[520px]">{EditorBox}</div>
       )}
-      {/* Brainstorm Outline - Always Visible */}
+      {/* Brainstorm Outline - Visible by default with collapse option */}
       <div className="mt-6 border-t pt-4">
-        <h3 className="text-lg font-semibold mb-3">Your Brainstorm Outline</h3>
-        {(() => {
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-lg font-semibold">Your Brainstorm Outline</h3>
+          <button
+            onClick={() => setShowBrainstormOutline(!showBrainstormOutline)}
+            className="text-sm px-3 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700"
+          >
+            {showBrainstormOutline ? '▼ Hide' : '▶ Show'}
+          </button>
+        </div>
+        {showBrainstormOutline && (() => {
           try {
             const brainstormData = JSON.parse(brainstorm || '{}');
             return (
@@ -1613,15 +1675,29 @@ const StudyApp: React.FC = () => {
   const [aiTranscript, setAiTranscript] = useState<{role:"user"|"assistant"; content:string}[]>([]);
   const [attentionMeta, setAttentionMeta] = useState<any>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [totalViolations, setTotalViolations] = useState(0); // Track fullscreen violations
 
   // Attention tracking for brainstorm (step 3) and editor (step 4)
   const attn = useWritingAttention(step === 3 || step === 4, {
-    graceMs: 3000,
-    halfLifeMs: 12000,
+    graceMs: 5000,
+    halfLifeMs: 15000,
     nudgeThreshold: 0.5,
     finalThreshold: 0.35,
-    maxNudges: 2,
+    maxNudges: 5,
+    nudgeCooldownMs: 15000,
   });
+
+  // Track if we've already banned for finalStrike
+  const bannedForStrikeRef = useRef(false);
+  
+  // Ban user when finalStrike occurs
+  useEffect(() => {
+    if (attn.finalStrike && !bannedForStrikeRef.current && meta) {
+      bannedForStrikeRef.current = true;
+      banParticipant(meta.prolificId);
+      console.log('🚫 User banned due to attention strike');
+    }
+  }, [attn.finalStrike, meta]);
 
   // Boot: capture prolific id, assign group, and start Supabase session
   const initRef = useRef(false); // Prevent duplicate initialization
@@ -1810,10 +1886,38 @@ const StudyApp: React.FC = () => {
       </div>
     </Shell>
   );
+  
+  // Session invalidated screen (for attention strike during study)
+  const InvalidatedScreen = (
+    <Shell title="Session Invalidated">
+      <div className="prose max-w-none text-center">
+        <div className="mb-6">
+          <div className="text-6xl mb-4">❌</div>
+          <h2 className="text-2xl font-bold text-red-600 mb-4">Your Session Has Been Invalidated</h2>
+        </div>
+        <p className="text-red-600 mb-4">
+          You have been removed from this study due to insufficient attention during the task.
+        </p>
+        <p className="text-gray-700 mb-6">
+          Our system detected prolonged periods of inactivity that indicate you were not actively engaged with the writing task.
+        </p>
+        <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+          <p className="font-semibold text-red-800 mb-2">What to do next:</p>
+          <p className="text-sm text-red-700">
+            Please close this window and return the study on Prolific.
+            Your participation data has been recorded as incomplete.
+          </p>
+        </div>
+      </div>
+    </Shell>
+  );
 
   if (!loaded) return <div className="p-6 text-gray-500">Loading…</div>;
   
   if (blocked) return BlockedScreen;
+  
+  // Show invalidated screen if attention strike occurred
+  if (attn.finalStrike) return InvalidatedScreen;
   
   if (!meta) return <div className="p-6 text-gray-500">Loading…</div>;
 
@@ -1821,8 +1925,23 @@ const StudyApp: React.FC = () => {
 
   return (
     <div className="min-h-screen">
-      {step === 1 && <InstructionsView meta={meta} sessionId={sessionId} onNext={()=> setStep(2)} />}
-      {step === 2 && <PromptView meta={meta} onNext={() => setStep(3)} />}
+      {step === 1 && (
+        <ComplianceGate onViolation={(n) => {
+          console.log("Violation", n);
+          setTotalViolations(n);
+        }}>
+          <InstructionsView meta={meta} sessionId={sessionId} onNext={()=> setStep(2)} />
+        </ComplianceGate>
+      )}
+      
+      {step === 2 && (
+        <ComplianceGate onViolation={(n) => {
+          console.log("Violation", n);
+          setTotalViolations(n);
+        }}>
+          <PromptView meta={meta} onNext={() => setStep(3)} />
+        </ComplianceGate>
+      )}
       {/* {step === 3 && <BrainstormView meta={meta} value={brainstorm} setValue={setBrainstorm} onNext={()=> setStep(4)} />}
       {step === 4 && (
         <EditorView meta={meta} brainstorm={brainstorm} onNext={(t, a)=>{ setFinalText(t); setAiTranscript(a); setStep(5); }} />
@@ -1831,25 +1950,22 @@ const StudyApp: React.FC = () => {
 
 {step === 3 && (
   <ComplianceGate 
-  onViolation={(n) => console.log("Violation", n)}>
+  onViolation={(n) => {
+    console.log("Violation", n);
+    setTotalViolations(n);
+  }}>
     {/* Attention warnings for brainstorm phase */}
-    {attn.showFinalWarning && (
+    {attn.showFinalWarning && !attn.finalStrike && (
       <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-orange-500 text-white px-6 py-3 rounded-lg shadow-lg text-center max-w-md">
         <div className="font-bold">⚠️ Final Warning</div>
         <div className="text-sm">We need your full attention. Please stay focused or your session may be invalidated.</div>
       </div>
     )}
     
-    {attn.finalStrike && (
-      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white px-6 py-3 rounded-lg shadow-lg text-center max-w-md">
-        <div className="font-bold">❌ Session Invalidated</div>
-        <div className="text-sm">Your submission may not be approved due to insufficient attention.</div>
-      </div>
-    )}
-    
     {attn.showNudge && !attn.showFinalWarning && !attn.finalStrike && (
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-black text-white text-xs px-3 py-2 rounded-lg opacity-90">
-        Still with us? A quick keystroke or scroll helps.
+      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40 bg-black text-white px-6 py-4 rounded-lg shadow-lg text-center">
+        <div className="text-base font-semibold mb-1">👋 Still with us?</div>
+        <div className="text-sm">A quick keystroke or scroll helps maintain your attention score.</div>
       </div>
     )}
 
@@ -1885,7 +2001,10 @@ const StudyApp: React.FC = () => {
 
 
 {step === 4 && (
-  <ComplianceGate onViolation={(n)=>console.log("Violation", n)}>
+  <ComplianceGate onViolation={(n) => {
+    console.log("Violation", n);
+    setTotalViolations(n);
+  }}>
     {/* Development mode attention score display */}
     {DEV_MODE && (
       <div className="fixed top-16 right-4 z-50 bg-gray-900 text-white p-3 rounded-lg text-sm font-mono shadow-lg">
@@ -1915,19 +2034,16 @@ const StudyApp: React.FC = () => {
     )}
 
     {/* attention banners/toasts */}
-    {attn.showFinalWarning && (
+    {attn.showFinalWarning && !attn.finalStrike && (
       <div className="fixed top-3 left-1/2 -translate-x-1/2 z-40 bg-amber-100 text-amber-900 border border-amber-300 px-4 py-2 rounded-lg text-sm shadow">
         Final warning: keep engaging (typing, moving the mouse). If your attention drops again, your submission may be flagged.
       </div>
     )}
-    {attn.finalStrike && (
-      <div className="fixed top-3 left-1/2 -translate-x-1/2 z-40 bg-red-100 text-red-700 border border-red-400 px-4 py-2 rounded-lg text-sm shadow">
-        Attention dropped again. Your submission will be flagged for review.
-      </div>
-    )}
+    
     {attn.showNudge && !attn.finalStrike && (
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-black text-white text-xs px-3 py-2 rounded-lg opacity-90">
-        Still with us? A quick keystroke or scroll helps.
+      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40 bg-black text-white px-6 py-4 rounded-lg shadow-lg text-center">
+        <div className="text-base font-semibold mb-1">👋 Still with us?</div>
+        <div className="text-sm">A quick keystroke or scroll helps maintain your attention score.</div>
       </div>
     )}
 
@@ -1947,6 +2063,7 @@ const StudyApp: React.FC = () => {
           nudges: attn.nudges,
           finalWarningShown: attn.showFinalWarning,
           finalStrike: attn.finalStrike, // <-- flag this if you want to invalidate/mark
+          fullscreenViolations: totalViolations, // Include fullscreen violation count
         });
         setStep(5);
       }}
@@ -1955,7 +2072,10 @@ const StudyApp: React.FC = () => {
 )}
 
 {step === 5 && (
-  <ComplianceGate onViolation={(n) => console.log("Violation", n)}>
+  <ComplianceGate onViolation={(n) => {
+    console.log("Violation", n);
+    setTotalViolations(n);
+  }}>
     <SurveyView meta={meta} onSubmit={onFinishSurvey} />
   </ComplianceGate>
 )}

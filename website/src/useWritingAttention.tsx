@@ -23,10 +23,10 @@ type AttnState = {
 export function useWritingAttention(enabled: boolean, opts: AttnOpts = {}): AttnState {
   const {
     graceMs = 5000,
-    halfLifeMs = 30000,
+    halfLifeMs = 15000,
     nudgeThreshold = 0.5,
-    finalThreshold = 0.35,
-    maxNudges = 2,
+    finalThreshold = 0.2,
+    maxNudges = 5,
     minScore = 0.05,
     nudgeCooldownMs = 15000,
   } = opts;
@@ -40,14 +40,32 @@ export function useWritingAttention(enabled: boolean, opts: AttnOpts = {}): Attn
 
   const lastActRef = useRef<number>(performance.now());
   const lastNudgeRef = useRef<number>(0);
+  const nudgesRef = useRef<number>(0); // Track nudges in ref to avoid stale closures
   const armedFinalRef = useRef<boolean>(false);     // true after we show final warning
   const hysteresisOkRef = useRef<boolean>(true);    // require recovery above (finalThreshold+0.08) before next dip counts
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      // Reset everything when disabled
+      setScore(1);
+      setShowNudge(false);
+      setNudges(0);
+      setShowFinalWarning(false);
+      setFinalStrike(false);
+      setWorstScore(1);
+      nudgesRef.current = 0;
+      armedFinalRef.current = false;
+      hysteresisOkRef.current = true;
+      lastNudgeRef.current = 0;
+      return;
+    }
 
-    const markActive = () => { lastActRef.current = performance.now(); setScore(1); };
+    const markActive = () => { 
+      lastActRef.current = performance.now(); 
+      setScore(1); 
+      // Don't reset worstScore when activity occurs - only track the worst ever
+    };
     const key = (e: KeyboardEvent) => {
       // ignore pure meta combos
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -76,18 +94,23 @@ export function useWritingAttention(enabled: boolean, opts: AttnOpts = {}): Attn
         s = Math.max(minScore, Math.exp(-Math.log(2) * (t / halfLifeMs)));
       }
       setScore(s);
-      if (s < worstScore) setWorstScore(s);
+      
+      // Update worstScore only if current score is lower
+      setWorstScore(prev => Math.min(prev, s));
 
-      // Handle nudges
-      if (!finalStrike && !showFinalWarning && s < nudgeThreshold && nudges < maxNudges) {
+      // Handle nudges - use ref to check current nudge count to avoid stale closure
+      const currentNudges = nudgesRef.current;
+      if (!finalStrike && !armedFinalRef.current && s < nudgeThreshold && currentNudges < maxNudges) {
         const sinceLast = now - lastNudgeRef.current;
         if (sinceLast > nudgeCooldownMs) {
           lastNudgeRef.current = now;
-          setNudges(n => n + 1);
+          const newNudgeCount = currentNudges + 1;
+          nudgesRef.current = newNudgeCount;
+          setNudges(newNudgeCount);
           setShowNudge(true);
           setTimeout(() => setShowNudge(false), 2500);
           // After last nudge, arm final warning
-          if (nudges + 1 >= maxNudges) {
+          if (newNudgeCount >= maxNudges) {
             setShowFinalWarning(true);
             armedFinalRef.current = true;
             hysteresisOkRef.current = false; // require recovery before we count next dip
