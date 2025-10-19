@@ -7,12 +7,14 @@ export const ComplianceGate: React.FC<{
   enableWakeLock?: boolean;
   onViolation?: (n: number) => void;
   onResume?: () => void;
-}> = ({ children, requireFullscreen = true, enableWakeLock = true, onViolation, onResume }) => {
+  initialViolations?: number;
+}> = ({ children, requireFullscreen = true, enableWakeLock = true, onViolation, onResume, initialViolations }) => {
   const { needsAttention, violations, resume } = useComplianceGuard({
     requireFullscreen,
     enableWakeLock,
     onViolation,
     onResume,
+    initialViolations,
   });
 
   return (

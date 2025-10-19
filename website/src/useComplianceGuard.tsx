@@ -5,12 +5,13 @@ type Options = {
   enableWakeLock?: boolean;        // best-effort
   onViolation?: (count: number) => void;
   onResume?: () => void;
+  initialViolations?: number;      // start with a count from parent
 };
 
 export function useComplianceGuard(opts: Options = {}) {
   const requireFullscreen = opts.requireFullscreen ?? true;
   const [needsAttention, setNeedsAttention] = useState(false);
-  const [violations, setViolations] = useState(0);
+  const [violations, setViolations] = useState(opts.initialViolations ?? 0);
   const escapeRef = useRef({ count: 0, timer: 0 as any });
   const wakeLockRef = useRef<any>(null);
   const suppressedRef = useRef(false); // dev override

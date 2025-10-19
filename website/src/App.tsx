@@ -25,7 +25,7 @@ import { supabase } from './lib/supabase';
 */
 
 // Development mode - set to true to disable all timers for faster development
-const DEV_MODE = false;
+const DEV_MODE = true;
 
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
@@ -487,7 +487,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
   const [attempts, setAttempts] = useState(0);
   const [showError, setShowError] = useState(false);
   const [showFinalError, setShowFinalError] = useState(false);
-  const [timeRemaining, setTimeRemaining] = useState(DEV_MODE ? 0 : 15); // 15 second timer
+  const [timeRemaining, setTimeRemaining] = useState(DEV_MODE ? 0 : 20); // 15 second timer
 
   const correctAnswer = meta.group.includes("SELF") ? "zero_tolerance" : "ai_when_provided";
 
@@ -562,21 +562,23 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
           </div>
         )}
         <p className="leading-relaxed">
-          Welcome! You'll complete a short creative writing task for a research study. Your screen time and key presses are
-          recorded for research purposes only. Please read the instructions carefully.
+          Welcome! You'll complete a short creative writing task for a research study. {meta.group.includes("SELF") ? 
+            "Our goal is to understand how people write stories without the use of AI, in particular how people brainstorm, write first drafts, and refine their stories." 
+            : "Our goal is to understand how people write stories with the use of AI, in particular how it might contribute to less diverse stories."
+          } Please read the instructions carefully.
         </p>
         
         {/* Instructions */}
         <div className={`rounded-lg border p-4 ${showError ? 'border-red-300 bg-red-50' : 'border-gray-200'}`}>
           <h3 className="font-semibold mb-2">Instructions:</h3>
           <ul className="list-disc pl-6 space-y-2">
+            <li>Be thoughtful and authentic in your responses!</li>
+            <li>Stay on the page; progress may not be saved if you navigate away.</li>
             {meta.group.includes("SELF") ? (
-              <li><span className="font-bold">Do not use external AI tools</span> (e.g., Google, ChatGPT). We will be monitoring for prohibited AI usage using keystroke data, attention checks, and your final responses. <span className="font-bold text-red-500">If you are caught using AI, we will reject your submission.</span></li>
+              <li><span className="font-bold">Do not use external AI tools</span> (e.g., Google, ChatGPT). We will be monitoring for prohibited AI usage using keystroke data, attention checks, and your final submission. <span className="font-bold text-red-500">If you are caught using AI, we will return your submission.</span></li>
             ) : (
               <li>You are provided an in-app AI tool to aid in your creative writing task; in fact you are <span className="font-bold">required to use the AI tool when prompted.</span> However, oftentimes the AI tool will not achieve the quality you desire. We encourage you to use the AI tool as a stepping stone and as a helper, but <span className="font-bold">ultimately you are responsible for your own story.</span> Please do not use external AI tools that we do not provide to you.</li>
             )}
-            <li>Stay on the page; progress may not be saved if you navigate away.</li>
-            <li>Be thoughtful and authentic in your responses!</li>
           </ul>
         </div>
 
@@ -624,7 +626,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
                     checked={selectedOption === "ai_allowed"}
                     onChange={(e) => setSelectedOption(e.target.value)}
                   />
-                  <span>AI usage is generally allowed throughout the study</span>
+                  <span>Any AI usage is allowed throughout the study</span>
                 </label>
               </div>
 
@@ -886,17 +888,30 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
         </div>
       </div>
       
+      {/* Story Guidelines Box */}
+      <div className="mb-6 p-4 bg-blue-50 border-2 border-blue-300 rounded-xl">
+        <h3 className="font-bold text-blue-900 mb-2 text-base">📖 Story Guidelines</h3>
+        <p className="text-sm text-blue-900 mb-2">
+          To help spark ideas and make your story easier to shape, we've added a few gentle guidelines to focus your creativity:
+        </p>
+        <ul className="list-disc pl-5 space-y-1 text-sm text-blue-800">
+          <li>Write the story from a <span className="font-bold">first-person</span> point of view.</li>
+          <li>The story should take place over <span className="font-bold">no more than one day</span>.</li>
+          <li>The story should center on a <span className="font-bold">decision or dilemma</span>.</li>
+        </ul>
+      </div>
+
       <p className="mb-4 text-sm text-gray-600">Outline your story plan below. Use as many of the boxes as you find necessary. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>! Remember, the story should be <span className="font-semibold">200-350 words.</span></p>
 
 {/* Quick Ideas Section */}
 <div className="mb-6">
 <h2 className="text-xl font-bold mb-3 text-gray-800">Quick Ideas</h2>
-<textarea
+      <textarea
 value={quick_ideas}
 onChange={(e) => set_quick_ideas(e.target.value)}
 onPaste={(e) => e.preventDefault()}
 rows={3}
-className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
+        className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="Jot down as many ideas for a story you have."
 />
 </div>
@@ -984,7 +999,7 @@ placeholder="Summarize the main events or structure."
 // ---- New View: Prompt ----
 const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta, onNext }) => {
   const isDiv = meta.group.includes("DIV");
-  const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 15);
+  const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 20);
   const [showAttentionCheck, setShowAttentionCheck] = React.useState(false);
   const [selectedOption, setSelectedOption] = React.useState<string | null>(null);
   const [showWarning, setShowWarning] = React.useState(false);
@@ -1046,7 +1061,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
         </table>
         <div className="my-10"></div>
         <p className="mb-2 text-gray-500 italic">
-          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After 30 seconds of inactivity, we will flag your submission for manual review.
+          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After multiple periods of inactivity, we will flag your submission for manual review.
         </p>
       </>
     )
@@ -1174,23 +1189,43 @@ const AIChatPanel: React.FC<{
   messages: {role:"user"|"assistant"; content:string}[], 
   onSend: (m:string)=>void,
   draft: string,
-  setDraft: (s:string)=>void
-}>=({ messages, onSend, draft, setDraft })=>{
+  setDraft: (s:string)=>void,
+  isLoading?: boolean
+}>=({ messages, onSend, draft, setDraft, isLoading = false })=>{
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const [showConfirmSend, setShowConfirmSend] = useState(false);
   
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, isLoading]);
+  
+  const handleSendClick = () => {
+    if (draft.trim()) {
+      setShowConfirmSend(true);
+    }
+  };
+  
+  const confirmSend = () => {
+    if (draft.trim()) {
+      onSend(draft.trim());
+      setDraft("");
+    }
+    setShowConfirmSend(false);
+  };
+  
+  const cancelSend = () => {
+    setShowConfirmSend(false);
+  };
   
   return (
     <div className="h-full flex flex-col">
       <div className="font-semibold mb-2">AI Assistant</div>
       <div ref={chatContainerRef} className="border rounded-xl p-3 overflow-y-auto space-y-3 max-h-[800px]">
         {messages.length===0 && (
-          <div className="text-sm text-gray-500">Ask the AI for a first draft or to edit. (Wire up your API in onSend)</div>
+          <div className="text-sm text-gray-500">Ask the AI for a first draft or to edit.</div>
         )}
         {messages.map((m, i)=> (
           <div key={i} className={"p-2 rounded-lg " + (m.role==="assistant"?"bg-gray-100":"bg-gray-50 border")}> 
@@ -1198,26 +1233,78 @@ const AIChatPanel: React.FC<{
             <div className="whitespace-pre-wrap">{m.content}</div>
           </div>
         ))}
+        {isLoading && (
+          <div className="p-2 rounded-lg bg-gray-100">
+            <div className="text-xs uppercase tracking-wide opacity-60">assistant</div>
+            <div className="flex items-center gap-2 text-gray-600">
+              <div className="flex gap-1">
+                <span className="animate-bounce" style={{ animationDelay: '0ms' }}>●</span>
+                <span className="animate-bounce" style={{ animationDelay: '150ms' }}>●</span>
+                <span className="animate-bounce" style={{ animationDelay: '300ms' }}>●</span>
       </div>
+              <span className="text-sm">AI is thinking...</span>
+            </div>
+          </div>
+        )}
+      </div>
+      
+      {/* Confirmation dialog */}
+      {showConfirmSend && (
+        <div className="mt-2 p-3 bg-yellow-50 border border-yellow-300 rounded-lg">
+          <p className="text-sm font-semibold text-yellow-900 mb-2">Are you sure you want to send this prompt to the AI?</p>
+          <div className="flex gap-2">
+            <button 
+              className="px-3 py-1 rounded-lg bg-black text-white text-sm"
+              onClick={confirmSend}
+            >
+              Yes, send
+            </button>
+            <button 
+              className="px-3 py-1 rounded-lg border border-gray-300 text-gray-700 text-sm"
+              onClick={cancelSend}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      
       <div className="mt-3 flex gap-2">
-        <input
-          className="flex-1 border rounded-xl p-2"
-          placeholder="Type a message…"
+        <textarea
+          className="flex-1 border rounded-xl p-2 resize-y min-h-[60px] max-h-[300px]"
+          placeholder="Type a message… (press Enter for new line)"
           value={draft}
           onChange={(e)=>setDraft(e.target.value)}
-          onKeyDown={(e)=>{ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); if(draft.trim()) { onSend(draft.trim()); setDraft(""); } } }}
+          rows={3}
+          disabled={isLoading}
         />
-        <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={()=>{ if(draft.trim()){ onSend(draft.trim()); setDraft(""); } }}>Send</button>
+        <button 
+          className={`px-3 py-2 rounded-xl ${
+            !draft.trim() || isLoading
+              ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+              : 'bg-black text-white'
+          }`}
+          onClick={handleSendClick}
+          disabled={!draft.trim() || isLoading}
+        >
+          {isLoading ? 'Sending...' : 'Send'}
+        </button>
       </div>
       
       {/* AI Prompting Tips - Collapsible */}
       <details className="mt-3 p-3 bg-gray-50 rounded-lg text-xs text-gray-700">
         <summary className="font-semibold cursor-pointer hover:text-gray-900">💡 Tips for prompting the AI (click to expand)</summary>
-        <ul className="mt-2 space-y-1 list-disc list-inside text-gray-600">
-          <li>"Write a first draft about [your story idea, including characters, setting, conflict, and resolution]"</li>
-          <li>"Generate a creative opening paragraph. My story is about [your story idea, including characters and setting]"</li>
-          <li>"Help me develop the conflict between [character] and [obstacle]"</li>
-          <li>"Rewrite this paragraph in a more [dramatic/humorous/suspenseful] tone: [paragraph]"</li>
+        <ul className="mt-2 space-y-2 text-gray-600">
+          <li className="ml-4">
+            <div>"In 200-350 words, write a short story with the following elements:</div>
+            <div className="ml-4 mt-1 space-y-1">
+              <div>- Setting: [your setting]</div>
+              <div>- Main character: [your main character]</div>
+              <div>- Conflict: [your conflict]</div>
+            </div>
+            <div className="mt-1">Make sure to write in first person and unfold the story over a single day."</div>
+          </li>
+          <li className="ml-4">"Rewrite this paragraph in a more [dramatic/humorous/suspenseful] tone: [paragraph]"</li>
         </ul>
       </details>
     </div>
@@ -1234,6 +1321,7 @@ const EditorView: React.FC<{
   const [text, setText] = useState("");
   const [aiMessages, setAiMessages] = useState<{role:"user"|"assistant"; content:string}[]>([]);
   const [chatDraft, setChatDraft] = useState(""); // Lift chat input state
+  const [isAILoading, setIsAILoading] = useState(false); // Track if AI is responding
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const [timeRemaining, setTimeRemaining] = useState(DEV_MODE ? 0 : 20 * 60); // 20 minutes in seconds
   const [showReminder, setShowReminder] = useState<false | '5min' | '1min'>(false);
@@ -1348,13 +1436,73 @@ const EditorView: React.FC<{
       saveSnapshot(sessionId, 'writing', 'chat', message);
     }
     
-    // Placeholder: append user message and a fake assistant reply
+    // Add user message to chat
     setAiMessages((msgs)=>[...msgs, { role:"user", content: message }]);
-    // ---- Replace below with your API call ----
-    if (!DEV_MODE) {
-      await new Promise((r)=>setTimeout(r, 300));
+    
+    // Set loading state
+    setIsAILoading(true);
+    
+    // Call OpenAI API
+    try {
+      const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY || 'YOUR_OPENAI_API_KEY_HERE';
+      
+      if (!OPENAI_API_KEY || OPENAI_API_KEY === 'YOUR_OPENAI_API_KEY_HERE') {
+        console.warn('⚠️ OpenAI API key not configured');
+        setAiMessages((msgs)=>[...msgs, { 
+          role:"assistant", 
+          content: "[Error: OpenAI API key not configured. Please add VITE_OPENAI_API_KEY to your .env file]" 
+        }]);
+        return;
+      }
+      
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${OPENAI_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-5-mini',
+          messages: [
+            {
+              role: 'system',
+              content: `Role and Objective:
+- Serve as a helpful assistant guiding the user to write a short story.
+
+Instructions:
+- Follow the user's requests: it could be to write a first draft, to make edits, or other requests.
+- The story must be composed from a first-person point of view.
+- The story should unfold within a single day (no more than 24 hours).
+
+Verbosity and Reasoning Effort:
+- Keep guidance and explanations brief. Set reasoning_effort = low.`
+            },
+            ...aiMessages.map(m => ({ role: m.role, content: m.content })),
+            { role: 'user', content: message }
+          ]
+        })
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || 'API request failed');
+      }
+      
+      const data = await response.json();
+      const assistantMessage = data.choices[0]?.message?.content || 'No response from AI';
+      
+      setAiMessages((msgs)=>[...msgs, { role:"assistant", content: assistantMessage }]);
+      
+    } catch (error) {
+      console.error('❌ OpenAI API error:', error);
+      setAiMessages((msgs)=>[...msgs, { 
+        role:"assistant", 
+        content: `[Error communicating with AI: ${error instanceof Error ? error.message : 'Unknown error'}]` 
+      }]);
+    } finally {
+      // Always clear loading state
+      setIsAILoading(false);
     }
-    setAiMessages((msgs)=>[...msgs, { role:"assistant", content: "[placeholder] API not connected yet. Your note: " + message }]);
   };
 
   const EditorBox = (
@@ -1456,26 +1604,26 @@ const EditorView: React.FC<{
                   )}
                 </div>
               )}
-              <button
-                onClick={() => setShowConfirmation(true)}
+            <button
+              onClick={() => setShowConfirmation(true)}
                 disabled={timeRemaining > 900 || wordCount < 200 || wordCount > 350}
-                className={`px-4 py-2 rounded-xl ${
+              className={`px-4 py-2 rounded-xl ${
                   timeRemaining > 900 || wordCount < 200 || wordCount > 350
-                    ? 'bg-gray-300 cursor-not-allowed'
-                    : 'bg-black text-white'
-                }`}
-                title={
+                  ? 'bg-gray-300 cursor-not-allowed'
+                  : 'bg-black text-white'
+              }`}
+              title={
                   timeRemaining > 900
                     ? `Please wait ${timeRemaining - 900} more seconds`
                     : wordCount < 200 
                       ? `Need ${200 - wordCount} more words` 
                       : wordCount > 350 
                         ? `Remove ${wordCount - 350} words` 
-                        : ''
-                }
-              >
-                Submit
-              </button>
+                    : ''
+              }
+            >
+              Submit
+            </button>
             </>
           )}
         </div>
@@ -1496,11 +1644,24 @@ const EditorView: React.FC<{
         </div>
       </div>
       
+      {/* Story Guidelines Box */}
+      <div className="mb-6 p-4 bg-blue-50 border-2 border-blue-300 rounded-xl">
+        <h3 className="font-bold text-blue-900 mb-2 text-base">📖 Story Guidelines</h3>
+        <p className="text-sm text-blue-900 mb-2">
+          To help spark ideas and make your story easier to shape, we've added a few gentle guidelines to focus your creativity:
+        </p>
+        <ul className="list-disc pl-5 space-y-1 text-sm text-blue-800">
+          <li>Write the story from a <span className="font-bold">first-person</span> point of view.</li>
+          <li>The story should take place over <span className="font-bold">no more than one day</span>.</li>
+          <li>The story should center on a <span className="font-bold">decision or dilemma</span>.</li>
+        </ul>
+      </div>
+
       {isAI ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 min-h-[520px]">
           <div>{EditorBox}</div>
           <div className="border rounded-2xl p-4">
-            <AIChatPanel messages={aiMessages} onSend={sendToAI} draft={chatDraft} setDraft={setChatDraft} />
+            <AIChatPanel messages={aiMessages} onSend={sendToAI} draft={chatDraft} setDraft={setChatDraft} isLoading={isAILoading} />
           </div>
         </div>
       ) : (
@@ -1743,8 +1904,9 @@ const StudyApp: React.FC = () => {
     nudgeCooldownMs: 15000,
   });
 
-  // Track if we've already banned for finalStrike
+  // Track if we've already banned for finalStrike or fullscreen violations
   const bannedForStrikeRef = useRef(false);
+  const bannedForViolationsRef = useRef(false);
   
   // Ban user when finalStrike occurs
   useEffect(() => {
@@ -1754,6 +1916,16 @@ const StudyApp: React.FC = () => {
       console.log('🚫 User banned due to attention strike');
     }
   }, [attn.finalStrike, meta]);
+
+  // Ban user when fullscreen violations exceed 5
+  useEffect(() => {
+    if (totalViolations > 5 && !bannedForViolationsRef.current && meta) {
+      bannedForViolationsRef.current = true;
+      banParticipant(meta.prolificId);
+      console.log('🚫 User banned due to excessive fullscreen violations:', totalViolations);
+      setBlocked('fullscreen_violations');
+    }
+  }, [totalViolations, meta]);
 
   // Boot: capture prolific id, assign group, and start Supabase session
   const initRef = useRef(false); // Prevent duplicate initialization
@@ -1777,7 +1949,7 @@ const StudyApp: React.FC = () => {
           return;
         }
         
-        const prolificId = getProlificIdFromURL();
+      const prolificId = getProlificIdFromURL();
         
         // Debug: Check environment variables
         console.log('🔍 Debug Info:');
@@ -1794,17 +1966,17 @@ const StudyApp: React.FC = () => {
         }
         
         // Check participant status and assign group
-        const group = await assignGroupBalanced(prolificId);
-        const startedAt = todayISO();
+      const group = await assignGroupBalanced(prolificId);
+      const startedAt = todayISO();
         
         // Ensure participant exists in database and start session
         await ensureParticipant(prolificId, group);
         const sid = await startSession(prolificId);
         console.log('Session ID:', sid);
         
-        setMeta({ prolificId, group, startedAt });
+      setMeta({ prolificId, group, startedAt });
         setSessionId(sid);
-        setLoaded(true);
+      setLoaded(true);
       } catch (error: any) {
         console.error('❌ Failed to initialize session:', error);
         
@@ -1927,6 +2099,7 @@ const StudyApp: React.FC = () => {
   const BlockedScreen = (
     <Shell title={
       blocked === 'banned' ? 'Access Denied' : 
+      blocked === 'fullscreen_violations' ? 'Session Terminated' :
       blocked === 'supabase_error' ? 'Configuration Error' :
       blocked === 'initialization_error' ? 'System Error' :
       'Already Participated'
@@ -1941,6 +2114,22 @@ const StudyApp: React.FC = () => {
             <p className="text-gray-600">
               Please <a href="https://app.prolific.com/submissions/complete?cc=C1KB1MCD" className="text-blue-600 underline">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C1KB1MCD.
             </p>
+          </>
+        ) : blocked === 'fullscreen_violations' ? (
+          <>
+            <h2 className="text-xl font-semibold text-red-600">Session Terminated: Excessive Fullscreen Violations</h2>
+            <p className="text-red-600">
+              You have been removed from this study due to repeated attempts to exit fullscreen mode.
+            </p>
+            <p className="text-gray-700 mt-3">
+              This study requires fullscreen mode to maintain focus and ensure data quality. After multiple warnings, you exceeded the maximum allowed violations ({totalViolations} violations detected).
+            </p>
+            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+              <p className="font-semibold text-red-800 mb-2">What to do next:</p>
+              <p className="text-sm text-red-700">
+                Please <a href="https://app.prolific.com/submissions/complete?cc=C10S0BXP" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: <span className="font-mono font-bold">C10S0BXP</span>.
+              </p>
+            </div>
           </>
         ) : blocked === 'supabase_error' ? (
           <>
@@ -2056,19 +2245,23 @@ const StudyApp: React.FC = () => {
   return (
     <div className="min-h-screen">
       {step === 1 && (
-        <ComplianceGate onViolation={(n) => {
-          console.log("Violation", n);
-          setTotalViolations(n);
-        }}>
+        <ComplianceGate 
+          initialViolations={totalViolations}
+          onViolation={(n) => {
+            console.log("Violation", n);
+            setTotalViolations(n);
+          }}>
           <InstructionsView meta={meta} sessionId={sessionId} onNext={()=> setStep(2)} />
         </ComplianceGate>
       )}
       
       {step === 2 && (
-        <ComplianceGate onViolation={(n) => {
-          console.log("Violation", n);
-          setTotalViolations(n);
-        }}>
+        <ComplianceGate 
+          initialViolations={totalViolations}
+          onViolation={(n) => {
+            console.log("Violation", n);
+            setTotalViolations(n);
+          }}>
           <PromptView meta={meta} onNext={() => setStep(3)} />
         </ComplianceGate>
       )}
@@ -2080,10 +2273,11 @@ const StudyApp: React.FC = () => {
 
 {step === 3 && (
   <ComplianceGate 
-  onViolation={(n) => {
-    console.log("Violation", n);
-    setTotalViolations(n);
-  }}>
+    initialViolations={totalViolations}
+    onViolation={(n) => {
+      console.log("Violation", n);
+      setTotalViolations(n);
+    }}>
     {/* Attention warnings for brainstorm phase */}
     {attn.showFinalWarning && !attn.finalStrike && (
       <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-orange-500 text-white px-6 py-3 rounded-lg shadow-lg text-center max-w-md">
@@ -2131,10 +2325,12 @@ const StudyApp: React.FC = () => {
 
 
 {step === 4 && (
-  <ComplianceGate onViolation={(n) => {
-    console.log("Violation", n);
-    setTotalViolations(n);
-  }}>
+  <ComplianceGate 
+    initialViolations={totalViolations}
+    onViolation={(n) => {
+      console.log("Violation", n);
+      setTotalViolations(n);
+    }}>
     {/* Development mode attention score display */}
     {DEV_MODE && (
       <div className="fixed top-16 right-4 z-50 bg-gray-900 text-white p-3 rounded-lg text-sm font-mono shadow-lg">
@@ -2202,10 +2398,12 @@ const StudyApp: React.FC = () => {
 )}
 
 {step === 5 && (
-  <ComplianceGate onViolation={(n) => {
-    console.log("Violation", n);
-    setTotalViolations(n);
-  }}>
+  <ComplianceGate 
+    initialViolations={totalViolations}
+    onViolation={(n) => {
+      console.log("Violation", n);
+      setTotalViolations(n);
+    }}>
     <SurveyView meta={meta} onSubmit={onFinishSurvey} />
   </ComplianceGate>
 )}
