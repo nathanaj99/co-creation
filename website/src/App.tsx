@@ -289,106 +289,106 @@ async function checkParticipantStatus(prolificId: string): Promise<{
   }
 }
 
-// ---- Group randomization with balancing ----
-async function assignGroupBalanced(prolificId: string): Promise<GroupKey> {
+// // ---- Group randomization with balancing ----
+// async function assignGroupBalanced(prolificId: string): Promise<GroupKey> {
 
-  // 1) Check participant status
-  const status = await checkParticipantStatus(prolificId);
+//   // 1) Check participant status
+//   const status = await checkParticipantStatus(prolificId);
   
-  if (!status.canProceed) {
-    throw new Error(status.reason || 'cannot_proceed');
-  }
+//   if (!status.canProceed) {
+//     throw new Error(status.reason || 'cannot_proceed');
+//   }
   
-  // Special case: TEST participant always gets AI-DIV
-  if (prolificId.includes('TEST')) {
-    console.log('🧪 TEST participant detected - assigning to AI-CONV');
-    return 'AI-CONV';
-  }
+//   // Special case: TEST participant always gets AI-DIV
+//   if (prolificId.includes('TEST')) {
+//     console.log('🧪 TEST participant detected - assigning to AI-CONV');
+//     return 'AI-CONV';
+//   }
 
 
-  // If participant exists with a group, reuse it
-  if (status.existingGroup) {
-    console.log(`📌 Reusing existing group assignment for ${prolificId}:`, status.existingGroup);
-    return status.existingGroup;
-  }
+//   // If participant exists with a group, reuse it
+//   if (status.existingGroup) {
+//     console.log(`📌 Reusing existing group assignment for ${prolificId}:`, status.existingGroup);
+//     return status.existingGroup;
+//   }
 
-  // 2) New participant - fetch counts from Supabase (actual completion counts)
-  let counts: Record<GroupKey, number> = {
-    "AI-DIV": 0,
-    "AI-CONV": 0,
-    "SELF-DIV": 0,
-    "SELF-CONV": 0
-  };
+//   // 2) New participant - fetch counts from Supabase (actual completion counts)
+//   let counts: Record<GroupKey, number> = {
+//     "AI-DIV": 0,
+//     "AI-CONV": 0,
+//     "SELF-DIV": 0,
+//     "SELF-CONV": 0
+//   };
 
-  if (supabase && supabase.from) {
-    try {
-      // Query submissions table directly and join to get group_key
-      // Filter only participants assigned after October 20, 2025
-      const { data, error } = await supabase
-        .from('submissions')
-        .select(`
-          session_id,
-          sessions!inner (
-            id,
-            prolific_id,
-            participants!inner (
-              prolific_id,
-              group_key,
-              assigned_at
-            )
-          )
-        `)
-        .gte('sessions.participants.assigned_at', '2025-10-20T00:00:00');
+//   if (supabase && supabase.from) {
+//     try {
+//       // Query submissions table directly and join to get group_key
+//       // Filter only participants assigned after October 20, 2025
+//       const { data, error } = await supabase
+//         .from('submissions')
+//         .select(`
+//           session_id,
+//           sessions!inner (
+//             id,
+//             prolific_id,
+//             participants!inner (
+//               prolific_id,
+//               group_key,
+//               assigned_at
+//             )
+//           )
+//         `)
+//         .gte('sessions.participants.assigned_at', '2025-10-20T00:00:00');
 
-      console.log('📡 Supabase query response:', { data, error });
+//       console.log('📡 Supabase query response:', { data, error });
 
-      if (error) {
-        console.warn('⚠️ Failed to fetch group counts from Supabase:', error.message);
-        console.log('Falling back to local counts');
-        counts = LocalStats.getCounts();
-      } else if (data) {
-        // Count completions by group
-        const groupCounts: Record<string, number> = {};
-        data.forEach((submission: any) => {
-          const groupKey = submission.sessions?.participants?.group_key;
-          if (groupKey) {
-            groupCounts[groupKey] = (groupCounts[groupKey] || 0) + 1;
-          }
-        });
+//       if (error) {
+//         console.warn('⚠️ Failed to fetch group counts from Supabase:', error.message);
+//         console.log('Falling back to local counts');
+//         counts = LocalStats.getCounts();
+//       } else if (data) {
+//         // Count completions by group
+//         const groupCounts: Record<string, number> = {};
+//         data.forEach((submission: any) => {
+//           const groupKey = submission.sessions?.participants?.group_key;
+//           if (groupKey) {
+//             groupCounts[groupKey] = (groupCounts[groupKey] || 0) + 1;
+//           }
+//         });
         
-        // Update counts object
-        GROUPS.forEach(group => {
-          counts[group] = groupCounts[group] || 0;
-        });
+//         // Update counts object
+//         GROUPS.forEach(group => {
+//           counts[group] = groupCounts[group] || 0;
+//         });
         
-        console.log('✅ Supabase completion counts by group:', counts);
-        console.log('📊 Total completions:', data.length);
-        console.log('📋 Raw group counts:', groupCounts);
-      }
-    } catch (err) {
-      console.warn('⚠️ Error querying Supabase:', err);
-      console.log('Falling back to local counts');
-      counts = LocalStats.getCounts();
-    }
-  } else {
-    console.warn('⚠️ Supabase not available, using local counts');
-    counts = LocalStats.getCounts();
-  }
+//         console.log('✅ Supabase completion counts by group:', counts);
+//         console.log('📊 Total completions:', data.length);
+//         console.log('📋 Raw group counts:', groupCounts);
+//       }
+//     } catch (err) {
+//       console.warn('⚠️ Error querying Supabase:', err);
+//       console.log('Falling back to local counts');
+//       counts = LocalStats.getCounts();
+//     }
+//   } else {
+//     console.warn('⚠️ Supabase not available, using local counts');
+//     counts = LocalStats.getCounts();
+//   }
 
-  console.log('📊 Current group counts:', counts);
+//   console.log('📊 Current group counts:', counts);
 
-  // 3) Find min count groups, break ties randomly
-  const min = Math.min(...GROUPS.map((g) => counts[g] || 0));
-  const candidates = GROUPS.filter((g) => (counts[g] || 0) === min);
+//   // 3) Find min count groups, break ties randomly
+//   const min = Math.min(...GROUPS.map((g) => counts[g] || 0));
+//   const candidates = GROUPS.filter((g) => (counts[g] || 0) === min);
   
-  console.log(`🎲 Minimum count: ${min}, Candidates:`, candidates);
+//   console.log(`🎲 Minimum count: ${min}, Candidates:`, candidates);
   
-  const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+//   const chosen = candidates[Math.floor(Math.random() * candidates.length)];
 
-  console.log(`✨ Assigned ${prolificId} to group: ${chosen}`);
+//   console.log(`✨ Assigned ${prolificId} to group: ${chosen}`);
 
-  return chosen;
-}
+//   return chosen;
+// }
 
 // ---- Simple random group assignment (no balancing) ----
 async function assignSimpleRandom(prolificId: string): Promise<GroupKey> {
