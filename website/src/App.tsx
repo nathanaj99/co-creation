@@ -25,7 +25,7 @@ import { supabase } from './lib/supabase';
 */
 
 // Development mode - set to true to disable all timers for faster development
-const DEV_MODE = true;
+const DEV_MODE = false;
 
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
@@ -323,6 +323,7 @@ async function assignGroupBalanced(prolificId: string): Promise<GroupKey> {
   if (supabase && supabase.from) {
     try {
       // Query submissions table directly and join to get group_key
+      // Filter only participants assigned after October 20, 2025
       const { data, error } = await supabase
         .from('submissions')
         .select(`
@@ -332,10 +333,12 @@ async function assignGroupBalanced(prolificId: string): Promise<GroupKey> {
             prolific_id,
             participants!inner (
               prolific_id,
-              group_key
+              group_key,
+              assigned_at
             )
           )
-        `);
+        `)
+        .gte('sessions.participants.assigned_at', '2025-10-20T00:00:00');
 
       console.log('📡 Supabase query response:', { data, error });
 
@@ -383,6 +386,37 @@ async function assignGroupBalanced(prolificId: string): Promise<GroupKey> {
   const chosen = candidates[Math.floor(Math.random() * candidates.length)];
 
   console.log(`✨ Assigned ${prolificId} to group: ${chosen}`);
+
+  return chosen;
+}
+
+// ---- Simple random group assignment (no balancing) ----
+async function assignSimpleRandom(prolificId: string): Promise<GroupKey> {
+  
+  // 1) Check participant status
+  const status = await checkParticipantStatus(prolificId);
+  
+  if (!status.canProceed) {
+    throw new Error(status.reason || 'cannot_proceed');
+  }
+  
+  // Special case: TEST participant always gets AI-CONV
+  if (prolificId.includes('TEST')) {
+    console.log('🧪 TEST participant detected - assigning to AI-CONV');
+    return 'AI-CONV';
+  }
+
+  // Strictly speaking we won't ever use this, because participants who are already assigned will not be able to re-enter the study.
+  // If participant exists with a group, reuse it
+  if (status.existingGroup) {
+    console.log(`📌 Reusing existing group assignment for ${prolificId}:`, status.existingGroup);
+    return status.existingGroup;
+  }
+
+  // 2) New participant - randomly assign to one of the four groups
+  const chosen = GROUPS[Math.floor(Math.random() * GROUPS.length)];
+  
+  console.log(`✨ Randomly assigned ${prolificId} to group: ${chosen}`);
 
   return chosen;
 }
@@ -982,15 +1016,15 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
           <tbody>
           <tr>
               <td className="border border-gray-300 p-2">Top 2%</td>
-              <td className="border border-gray-300 p-2">$10.00</td>
-            </tr>
-            <tr>
-              <td className="border border-gray-300 p-2">Top 2-10%</td>
               <td className="border border-gray-300 p-2">$7.00</td>
             </tr>
             <tr>
+              <td className="border border-gray-300 p-2">Top 2-10%</td>
+              <td className="border border-gray-300 p-2">$4.00</td>
+            </tr>
+            <tr>
               <td className="border border-gray-300 p-2">Top 10-25%</td>
-              <td className="border border-gray-300 p-2">$5.00</td>
+              <td className="border border-gray-300 p-2">$2.00</td>
             </tr>
 
           </tbody>
@@ -1693,7 +1727,7 @@ Verbosity and Reasoning Effort:
               )}
             <button
               onClick={() => setShowConfirmation(true)}
-                disabled={timeRemaining > 900 || wordCount < 10 || wordCount > 350}
+                disabled={timeRemaining > 900 || wordCount < 250 || wordCount > 350}
               className={`px-4 py-2 rounded-xl ${
                   timeRemaining > 900 || wordCount < 250 || wordCount > 350
                   ? 'bg-gray-300 cursor-not-allowed'
@@ -2097,7 +2131,7 @@ const StudyApp: React.FC = () => {
         }
         
         // Check participant status and assign group
-      const group = await assignGroupBalanced(prolificId);
+      const group = await assignSimpleRandom(prolificId);
       const startedAt = todayISO();
         
         // Ensure participant exists in database and start session
