@@ -28,7 +28,7 @@ export function useWritingAttention(enabled: boolean, opts: AttnOpts = {}): Attn
     finalThreshold = 0.2,
     maxNudges = 5,
     minScore = 0.05,
-    nudgeCooldownMs = 15000,
+    // nudgeCooldownMs removed - no longer needed with armed/disarmed system
   } = opts;
 
   const [score, setScore] = useState(1);
@@ -43,6 +43,7 @@ export function useWritingAttention(enabled: boolean, opts: AttnOpts = {}): Attn
   const nudgesRef = useRef<number>(0); // Track nudges in ref to avoid stale closures
   const armedFinalRef = useRef<boolean>(false);     // true after we show final warning
   const hysteresisOkRef = useRef<boolean>(true);    // require recovery above (finalThreshold+0.08) before next dip counts
+  const nudgeArmedRef = useRef<boolean>(false);     // true when score recovers above nudgeThreshold, allows next nudge
   const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -57,13 +58,18 @@ export function useWritingAttention(enabled: boolean, opts: AttnOpts = {}): Attn
       nudgesRef.current = 0;
       armedFinalRef.current = false;
       hysteresisOkRef.current = true;
+      nudgeArmedRef.current = false;
       lastNudgeRef.current = 0;
       return;
     }
 
+    // Initialize lastActRef when attention tracking becomes enabled
+    lastActRef.current = performance.now();
+
     const markActive = () => { 
       lastActRef.current = performance.now(); 
-      setScore(1); 
+      setScore(1);
+      nudgeArmedRef.current = true; // Re-arm nudge system when user is active
       // Don't reset worstScore when activity occurs - only track the worst ever
     };
     const key = (e: KeyboardEvent) => {
@@ -95,26 +101,31 @@ export function useWritingAttention(enabled: boolean, opts: AttnOpts = {}): Attn
       }
       setScore(s);
       
-      // Update worstScore only if current score is lower
-      setWorstScore(prev => Math.min(prev, s));
+      // Arm the nudge system initially when score is above threshold
+      if (s >= nudgeThreshold && !nudgeArmedRef.current && !armedFinalRef.current) {
+        nudgeArmedRef.current = true;
+      }
+      
+      // Update worstScore only if current score is lower AND below 1 (indicating real decay)
+      if (s < 1) {
+        setWorstScore(prev => Math.min(prev, s));
+      }
 
-      // Handle nudges - use ref to check current nudge count to avoid stale closure
+      // Handle nudges - only trigger when crossing threshold after being armed
       const currentNudges = nudgesRef.current;
-      if (!finalStrike && !armedFinalRef.current && s < nudgeThreshold && currentNudges < maxNudges) {
-        const sinceLast = now - lastNudgeRef.current;
-        if (sinceLast > nudgeCooldownMs) {
-          lastNudgeRef.current = now;
-          const newNudgeCount = currentNudges + 1;
-          nudgesRef.current = newNudgeCount;
-          setNudges(newNudgeCount);
-          setShowNudge(true);
-          setTimeout(() => setShowNudge(false), 2500);
-          // After last nudge, arm final warning
-          if (newNudgeCount >= maxNudges) {
-            setShowFinalWarning(true);
-            armedFinalRef.current = true;
-            hysteresisOkRef.current = false; // require recovery before we count next dip
-          }
+      if (!finalStrike && !armedFinalRef.current && s < nudgeThreshold && currentNudges < maxNudges && nudgeArmedRef.current) {
+        // Nudge triggers: score crossed below threshold AND system was armed (user was previously active)
+        nudgeArmedRef.current = false; // Disarm until next activity
+        const newNudgeCount = currentNudges + 1;
+        nudgesRef.current = newNudgeCount;
+        setNudges(newNudgeCount);
+        setShowNudge(true);
+        setTimeout(() => setShowNudge(false), 2500);
+        // After last nudge, arm final warning
+        if (newNudgeCount >= maxNudges) {
+          setShowFinalWarning(true);
+          armedFinalRef.current = true;
+          hysteresisOkRef.current = false; // require recovery before we count next dip
         }
       }
 

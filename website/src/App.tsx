@@ -25,7 +25,7 @@ import { supabase } from './lib/supabase';
 */
 
 // Development mode - set to true to disable all timers for faster development
-const DEV_MODE = false;
+const DEV_MODE = true;
 
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
@@ -264,7 +264,8 @@ async function checkParticipantStatus(prolificId: string): Promise<{
       return { canProceed: true };
     }
 
-    // Check if participant is banned
+    // If participant exists in database, they've already started the experiment
+    // Check if they're banned first
     if (participant.is_banned) {
       console.log('🚫 Participant is banned');
       return {
@@ -274,78 +275,13 @@ async function checkParticipantStatus(prolificId: string): Promise<{
       };
     }
 
-    console.log(`📌 Existing participant found: ${prolificId}, group: ${participant.group_key}`);
-
-    // Check if they have a submission (completed study)
-    const { data: sessions, error: sessError } = await supabase
-      .from('sessions')
-      .select('id')
-      .eq('prolific_id', prolificId);
-
-    if (sessError) {
-      console.error('Error checking sessions:', sessError);
-      return { canProceed: true, existingGroup: participant.group_key };
-    }
-
-    if (sessions && sessions.length > 0) {
-      const sessionIds = sessions.map((s: any) => s.id);
-
-      // Check for submission
-      const { data: submission, error: subError } = await supabase
-        .from('submissions')
-        .select('session_id')
-        .in('session_id', sessionIds)
-        .limit(1);
-
-      if (subError) {
-        console.error('Error checking submissions:', subError);
-        return { canProceed: true, existingGroup: participant.group_key };
-      }
-
-      if (submission && submission.length > 0) {
-        console.log('🚫 Participant has already completed the study');
-        return { 
-          canProceed: false, 
-          reason: 'already_completed',
-          existingGroup: participant.group_key
-        };
-      }
-
-      // Check for writing phase snapshots
-      const { data: writingSnapshot, error: snapError } = await supabase
-        .from('snapshots')
-        .select('session_id')
-        .in('session_id', sessionIds)
-        .eq('phase', 'writing')
-        .limit(1);
-
-      console.log('📡 Writing phase snapshot check:', {
-        sessionIds,
-        snapshots: writingSnapshot,
-        error: snapError,
-        found: writingSnapshot && writingSnapshot.length > 0
-      });
-
-      if (snapError) {
-        console.error('Error checking snapshots:', snapError);
-        return { canProceed: true, existingGroup: participant.group_key };
-      }
-
-      if (writingSnapshot && writingSnapshot.length > 0) {
-        console.log('🚫 Participant has started writing phase - BLOCKING');
-        return { 
-          canProceed: false, 
-          reason: 'writing_started',
-          existingGroup: participant.group_key
-        };
-      }
-      
-      console.log('✅ No writing snapshots found - allowing restart');
-    }
-
-    // Participant exists but hasn't reached writing phase - allow restart with same group
-    console.log('✅ Participant can restart with existing group:', participant.group_key);
-    return { canProceed: true, existingGroup: participant.group_key };
+    // Participant exists but is not banned - they started and quit the session
+    console.log('🚫 Participant exists in database - already started and quit session');
+    return {
+      canProceed: false,
+      reason: 'already_started',
+      existingGroup: participant.group_key
+    };
 
   } catch (err) {
     console.error('Error in checkParticipantStatus:', err);
@@ -365,8 +301,8 @@ async function assignGroupBalanced(prolificId: string): Promise<GroupKey> {
   
   // Special case: TEST participant always gets AI-DIV
   if (prolificId.includes('TEST')) {
-    console.log('🧪 TEST participant detected - assigning to AI-DIV');
-    return 'AI-DIV';
+    console.log('🧪 TEST participant detected - assigning to AI-CONV');
+    return 'AI-CONV';
   }
 
 
@@ -573,7 +509,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
           <h3 className="font-semibold mb-2">Instructions:</h3>
           <ul className="list-disc pl-6 space-y-2">
             <li>Be thoughtful and authentic in your responses!</li>
-            <li>Stay on the page; progress may not be saved if you navigate away.</li>
+            <li><span className="font-bold">Stay on the session.</span> Once you leave the session, you will not be able to return or start a new session.</li>
             {meta.group.includes("SELF") ? (
               <li><span className="font-bold">Do not use external AI tools</span> (e.g., Google, ChatGPT). We will be monitoring for prohibited AI usage using keystroke data, attention checks, and your final submission. <span className="font-bold text-red-500">If you are caught using AI, we will return your submission.</span></li>
             ) : (
@@ -901,7 +837,7 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
         </ul>
       </div>
 
-      <p className="mb-4 text-sm text-gray-600">Outline your story plan below. Use as many of the boxes as you find necessary. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>! Remember, the story should be <span className="font-semibold">200-350 words.</span></p>
+      <p className="mb-4 text-sm text-gray-600">Outline your story plan below. Use as many of the boxes as you find necessary. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>! Remember, the story should be <span className="font-semibold">250-350 words.</span></p>
 
 {/* Quick Ideas Section */}
 <div className="mb-6">
@@ -1034,7 +970,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
       <>
         <p className="text-lg mb-4 font-semibold">You are participating in a short story competition.</p>
         <p className="mb-2">There are thousands of submissions, so <span className="font-bold">your goal is to stand out</span> as much as possible. 
-          Find your voice and be as creative as possible! The short story should be 200-350 words.</p>
+          Find your voice and be as creative as possible! The short story should be 250-350 words.</p>
         <p className="mt-4 text-red-600">In other words, your <u>bonus</u> will be determined based on <span className="font-bold">originality and uniqueness.</span></p>
         <table className="w-full my-4 border-collapse">
           <thead>
@@ -1068,26 +1004,81 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
     : (
       <>
         <p className="text-lg mb-4 font-semibold">You are starting an Intro to Writing class.</p>
-        <p className="mb-2">Your first assignment is to create a 200-350 word short story. 
-          Your goal is to get an A by submitting a high-quality piece of work; there is no limit to the number of A's the teacher gives!</p>
-        <p className="mt-4 text-red-600">In other words, your <u>bonus</u> will be determined based on <span className="font-bold">the grade you receive.</span></p>
+        <p className="mb-2">Your first assignment is to create a 250-350 word short story. 
+          Your goal is to get an A by submitting a high-quality piece of work.</p>
+        
+        <div className="my-6 p-4 bg-blue-50 border-2 border-blue-300 rounded-xl">
+          <h3 className="font-bold text-blue-900 mb-3 text-base">Grading Rubric</h3>
+          <p className="text-sm text-blue-900 mb-3">Your story will be evaluated on two aspects:</p>
+          
+          <div className="bg-white rounded-lg overflow-hidden mb-3">
+            <table className="w-full">
+              <tbody>
+                <tr className="border-b border-gray-200">
+                  <td className="p-3 font-semibold text-blue-900 bg-gray-50 align-top w-1/3">
+                    1. Organization<br/>
+                    <span className="text-xs font-normal text-gray-600">(Narrative Flow)</span>
+                  </td>
+                  <td className="p-3 pl-6">
+                    <ul className="text-xs text-gray-700 space-y-2 text-left">
+                      <li><span className="font-semibold">(4 pt) Excellent:</span> Clear beginning, middle, and end with smooth transitions</li>
+                      <li><span className="font-semibold">(3 pt) Competent:</span> Logical flow with minor structural issues</li>
+                      <li><span className="font-semibold">(2 pt) Basic:</span> Some organization but lacks coherence</li>
+                      <li><span className="font-semibold">(1 pt) Does not meet expectations:</span> Disorganized or unclear structure</li>
+                    </ul>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="p-3 font-semibold text-blue-900 bg-gray-50 align-top w-1/3">
+                    2. Technique<br/>
+                    <span className="text-xs font-normal text-gray-600">(Grammar, Spelling, Punctuation)</span>
+                  </td>
+                  <td className="p-3 pl-6">
+                    <ul className="text-xs text-gray-700 space-y-2 text-left">
+                      <li><span className="font-semibold">(4 pt) Excellent:</span> No errors; demonstrates mastery</li>
+                      <li><span className="font-semibold">(3 pt) Competent:</span> Few minor errors that don't impede understanding</li>
+                      <li><span className="font-semibold">(2 pt) Basic:</span> Several errors that occasionally distract</li>
+                      <li><span className="font-semibold">(1 pt) Does not meet expectations:</span> Frequent errors that impede understanding</li>
+                    </ul>
+                  </td>
+                </tr>
+                <tr>
+                  <td className="p-3 font-semibold text-blue-900 bg-gray-50 align-top w-1/3">
+                    Creativity<br/>
+                  </td>
+                  <td className="p-3 pl-6">
+                    <p className="text-sm text-blue-900 text-left">
+                      <span className="font-semibold">Note:</span> You are <span className="font-bold">not graded on creativity or your voice</span>. While creativity and uniqueness are often contributors to good pieces of writing, for now we are only asking for a technically well-written story.
+                    </p>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        
+        <p className="mt-4 text-red-600">Your <u>bonus</u> will be determined based on <span className="font-bold">the grade you receive:</span></p>
         <table className="w-full my-4 border-collapse">
           <thead>
             <tr>
+            <th className="border border-gray-300 p-2 bg-gray-100">Point Range</th>
               <th className="border border-gray-300 p-2 bg-gray-100">Grade</th>
               <th className="border border-gray-300 p-2 bg-gray-100">Bonus</th>
             </tr>
           </thead>
           <tbody>
           <tr>
+              <td className="border border-gray-300 p-2">8 points</td>
               <td className="border border-gray-300 p-2">A</td>
-              <td className="border border-gray-300 p-2">$5.00</td>
+              <td className="border border-gray-300 p-2">$2.50</td>
             </tr>
             <tr>
+              <td className="border border-gray-300 p-2">6-7 points</td>
               <td className="border border-gray-300 p-2">B</td>
-              <td className="border border-gray-300 p-2">$3.00</td>
+              <td className="border border-gray-300 p-2">$1.00</td>
             </tr>
             <tr>
+              <td className="border border-gray-300 p-2">5 points or lower</td>
               <td className="border border-gray-300 p-2">C or lower</td>
               <td className="border border-gray-300 p-2">None</td>
             </tr>
@@ -1190,8 +1181,10 @@ const AIChatPanel: React.FC<{
   onSend: (m:string)=>void,
   draft: string,
   setDraft: (s:string)=>void,
-  isLoading?: boolean
-}>=({ messages, onSend, draft, setDraft, isLoading = false })=>{
+  isLoading?: boolean,
+  queryCount?: number,
+  maxQueries?: number
+}>=({ messages, onSend, draft, setDraft, isLoading = false, queryCount = 0, maxQueries = 15 })=>{
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const [showConfirmSend, setShowConfirmSend] = useState(false);
   
@@ -1220,9 +1213,21 @@ const AIChatPanel: React.FC<{
     setShowConfirmSend(false);
   };
   
+  const queriesRemaining = maxQueries - queryCount;
+  const isLimitReached = queryCount >= maxQueries;
+  
   return (
     <div className="h-full flex flex-col">
-      <div className="font-semibold mb-2">AI Assistant</div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="font-semibold">AI Assistant</div>
+        <div className={`text-xs font-medium ${
+          queriesRemaining <= 3 ? 'text-red-600' : 
+          queriesRemaining <= 5 ? 'text-orange-600' : 
+          'text-gray-600'
+        }`}>
+          {queriesRemaining} {queriesRemaining === 1 ? 'query' : 'queries'} remaining
+        </div>
+      </div>
       <div ref={chatContainerRef} className="border rounded-xl p-3 overflow-y-auto space-y-3 max-h-[800px]">
         {messages.length===0 && (
           <div className="text-sm text-gray-500">Ask the AI for a first draft or to edit.</div>
@@ -1243,6 +1248,14 @@ const AIChatPanel: React.FC<{
                 <span className="animate-bounce" style={{ animationDelay: '300ms' }}>●</span>
       </div>
               <span className="text-sm">AI is thinking...</span>
+            </div>
+          </div>
+        )}
+        {isLimitReached && (
+          <div className="p-3 rounded-lg bg-red-50 border border-red-200">
+            <div className="text-sm font-semibold text-red-800 mb-1">Query Limit Reached</div>
+            <div className="text-sm text-red-700">
+              You've used all {maxQueries} AI queries for this session. You can continue writing and editing your story in the main editor.
             </div>
           </div>
         )}
@@ -1272,22 +1285,23 @@ const AIChatPanel: React.FC<{
       <div className="mt-3 flex gap-2">
         <textarea
           className="flex-1 border rounded-xl p-2 resize-y min-h-[60px] max-h-[300px]"
-          placeholder="Type a message… (press Enter for new line)"
+          placeholder={isLimitReached ? "Query limit reached" : "Type a message… (press Enter for new line)"}
           value={draft}
           onChange={(e)=>setDraft(e.target.value)}
           rows={3}
-          disabled={isLoading}
+          disabled={isLoading || isLimitReached}
         />
         <button 
           className={`px-3 py-2 rounded-xl ${
-            !draft.trim() || isLoading
+            !draft.trim() || isLoading || isLimitReached
               ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
               : 'bg-black text-white'
           }`}
           onClick={handleSendClick}
-          disabled={!draft.trim() || isLoading}
+          disabled={!draft.trim() || isLoading || isLimitReached}
+          title={isLimitReached ? `Query limit reached (${maxQueries}/${maxQueries})` : ''}
         >
-          {isLoading ? 'Sending...' : 'Send'}
+          {isLoading ? 'Sending...' : isLimitReached ? 'Limit Reached' : 'Send'}
         </button>
       </div>
       
@@ -1296,7 +1310,7 @@ const AIChatPanel: React.FC<{
         <summary className="font-semibold cursor-pointer hover:text-gray-900">💡 Tips for prompting the AI (click to expand)</summary>
         <ul className="mt-2 space-y-2 text-gray-600">
           <li className="ml-4">
-            <div>"In 200-350 words, write a short story with the following elements:</div>
+            <div>"In 250-350 words, write a short story with the following elements:</div>
             <div className="ml-4 mt-1 space-y-1">
               <div>- Setting: [your setting]</div>
               <div>- Main character: [your main character]</div>
@@ -1322,6 +1336,8 @@ const EditorView: React.FC<{
   const [aiMessages, setAiMessages] = useState<{role:"user"|"assistant"; content:string}[]>([]);
   const [chatDraft, setChatDraft] = useState(""); // Lift chat input state
   const [isAILoading, setIsAILoading] = useState(false); // Track if AI is responding
+  const [aiQueryCount, setAiQueryCount] = useState(0); // Track number of AI queries sent
+  const MAX_AI_QUERIES = 15; // Maximum number of AI queries allowed per session
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const [timeRemaining, setTimeRemaining] = useState(DEV_MODE ? 0 : 20 * 60); // 20 minutes in seconds
   const [showReminder, setShowReminder] = useState<false | '5min' | '1min'>(false);
@@ -1330,12 +1346,24 @@ const EditorView: React.FC<{
   const [hasUsedAI, setHasUsedAI] = useState(false); // Track if user has interacted with AI
   const [showEditorEnabledMessage, setShowEditorEnabledMessage] = useState(false); // Show the enabled message
   const [showBrainstormOutline, setShowBrainstormOutline] = useState(true); // Control brainstorm visibility
+  const [showTimeExpiredWarning, setShowTimeExpiredWarning] = useState(false); // Show warning when time is up but word count invalid
+  const [showWordCountWarning, setShowWordCountWarning] = useState<false | '10min' | '5min' | '2min'>(false); // Word count warnings at intervals
   
   // Update word count whenever text changes
   useEffect(() => {
     const words = text.trim().split(/\s+/).filter(word => word.length > 0);
     setWordCount(words.length);
-  }, [text]);
+    
+    // Clear warnings if user fixes their word count
+    if (words.length >= 250 && words.length <= 350) {
+      if (showTimeExpiredWarning) {
+        setShowTimeExpiredWarning(false);
+      }
+      if (showWordCountWarning) {
+        setShowWordCountWarning(false);
+      }
+    }
+  }, [text, showTimeExpiredWarning, showWordCountWarning]);
 
   // Timer effect
   React.useEffect(() => {
@@ -1343,6 +1371,7 @@ const EditorView: React.FC<{
       const timer = setTimeout(() => {
         setTimeRemaining(prev => {
           const newTime = prev - 1;
+          
           // Show reminders at 5:00 and 1:00
           if (newTime === 300) {
             setShowReminder('5min');
@@ -1351,14 +1380,36 @@ const EditorView: React.FC<{
             setShowReminder('1min');
             setTimeout(() => setShowReminder(false), 10000);
           }
+          
+          // Show word count warnings at 10:00, 5:00, and 2:00 if word count is invalid
+          const isWordCountInvalid = wordCount < 250 || wordCount > 350;
+          if (isWordCountInvalid) {
+            if (newTime === 600) { // 10 minutes
+              setShowWordCountWarning('10min');
+              setTimeout(() => setShowWordCountWarning(false), 30000); // Show for 15 seconds
+            } else if (newTime === 300) { // 5 minutes
+              setShowWordCountWarning('5min');
+              setTimeout(() => setShowWordCountWarning(false), 30000);
+            } else if (newTime === 120) { // 2 minutes
+              setShowWordCountWarning('2min');
+              setTimeout(() => setShowWordCountWarning(false), 30000);
+            }
+          }
+          
           return newTime;
         });
       }, 1000);
       return () => clearTimeout(timer);
     } else if (!DEV_MODE && timeRemaining === 0) {
-      onNext(text, aiMessages); // Force proceed when time is up (only in production)
+      // Only force proceed if word count is valid (250-350 words)
+      if (wordCount >= 250 && wordCount <= 350) {
+        onNext(text, aiMessages);
+      } else {
+        // If word count is invalid, show warning to user
+        setShowTimeExpiredWarning(true);
+      }
     }
-  }, [timeRemaining]);
+  }, [timeRemaining, wordCount, text, aiMessages, onNext]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -1421,6 +1472,15 @@ const EditorView: React.FC<{
   }, [sessionId, isAI]); // Only depend on sessionId and isAI
 
   const sendToAI = async (message: string) => {
+    // Check if query limit has been reached
+    if (aiQueryCount >= MAX_AI_QUERIES) {
+      console.warn('⚠️ AI query limit reached');
+      return; // Don't send if limit reached
+    }
+    
+    // Increment query count
+    setAiQueryCount(prev => prev + 1);
+    
     // Mark that user has interacted with AI
     if (!hasUsedAI) {
       setHasUsedAI(true);
@@ -1511,13 +1571,13 @@ Verbosity and Reasoning Effort:
         <div className="font-semibold">Write Your Story</div>
         <div className="flex items-center gap-4">
           <div className={`text-sm ${
-            wordCount < 10 || wordCount > 350 
+            wordCount < 250 || wordCount > 350 
               ? 'text-red-600 font-semibold' 
               : 'text-green-600 font-semibold'
           }`}>
             {wordCount} words
           </div>
-          <div className="text-xs text-gray-500">Required length: 200-350 words</div>
+          <div className="text-xs text-gray-500">Required length: 250-350 words</div>
         </div>
       </div>
       {isAI && !hasUsedAI && (
@@ -1548,7 +1608,7 @@ Verbosity and Reasoning Effort:
         }}
         rows={18}
         className="w-full border rounded-xl p-3 focus:outline-none focus:ring h-full"
-        placeholder={isAI && !hasUsedAI ? "Please use the AI Assistant first..." : "Write here... (200-350 words)"}
+        placeholder={isAI && !hasUsedAI ? "Please use the AI Assistant first..." : "Write here... (250-350 words)"}
         spellCheck="true"
         disabled={isAI && !hasUsedAI}
         style={isAI && !hasUsedAI ? { backgroundColor: '#f9fafb', cursor: 'not-allowed' } : {}}
@@ -1564,7 +1624,34 @@ Verbosity and Reasoning Effort:
       title="Step 2 · Writing"
       footer={
         <div className="flex flex-col items-center gap-4">
-          {showReminder && (
+          {showTimeExpiredWarning && (
+            <div className="bg-red-100 border-2 border-red-500 text-red-800 px-6 py-3 rounded-lg text-base font-semibold">
+              ⏰ Time's up! However, you must meet the word count requirement (250-350 words) before submitting. 
+              {wordCount < 250 && ` Add ${250 - wordCount} more words.`}
+              {wordCount > 350 && ` Remove ${wordCount - 350} words.`}
+            </div>
+          )}
+          {showWordCountWarning && !showTimeExpiredWarning && (
+            <div className="bg-red-100 border-3 border-red-600 text-red-900 px-8 py-4 rounded-lg text-lg font-bold shadow-lg animate-pulse">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-2xl">⚠️</span>
+                <span>
+                  {showWordCountWarning === '10min' && 'You have 10 minutes remaining!'}
+                  {showWordCountWarning === '5min' && 'You have 5 minutes remaining!'}
+                  {showWordCountWarning === '2min' && 'You have 2 minutes remaining!'}
+                </span>
+              </div>
+              <div className="text-base">
+                Remember: Your story MUST be within 250-350 words. You will not be allowed to submit your story if it's not within the word limit!
+              </div>
+              <div className="mt-2 text-base font-semibold">
+                Current word count: {wordCount} words
+                {wordCount < 250 && ` (Need ${250 - wordCount} more words)`}
+                {wordCount > 350 && ` (Remove ${wordCount - 350} words)`}
+              </div>
+            </div>
+          )}
+          {showReminder && !showTimeExpiredWarning && !showWordCountWarning && (
             <div className="bg-yellow-100 border-2 border-yellow-400 text-yellow-700 px-6 py-3 rounded-lg text-base font-semibold animate-pulse">
               {showReminder === '5min' 
                 ? "⏰ 5 minutes remaining! Start wrapping up your story."
@@ -1591,13 +1678,13 @@ Verbosity and Reasoning Effort:
             </div>
           ) : (
             <>
-              {(timeRemaining > 900 || wordCount < 200 || wordCount > 350) && (
+              {(timeRemaining > 900 || wordCount < 250 || wordCount > 350) && (
                 <div className="text-sm text-gray-600 text-center">
                   {timeRemaining > 900 && (
                     <div>Please spend at least 5 minutes writing ({(20 * 60) - timeRemaining} / 300 seconds)</div>
                   )}
-                  {wordCount < 200 && (
-                    <div>Required: 200-350 words (currently {wordCount} words)</div>
+                  {wordCount < 250 && (
+                    <div>Required: 250-350 words (currently {wordCount} words)</div>
                   )}
                   {wordCount > 350 && (
                     <div>Please reduce to 350 words or less (currently {wordCount} words)</div>
@@ -1606,17 +1693,17 @@ Verbosity and Reasoning Effort:
               )}
             <button
               onClick={() => setShowConfirmation(true)}
-                disabled={timeRemaining > 900 || wordCount < 200 || wordCount > 350}
+                disabled={timeRemaining > 900 || wordCount < 10 || wordCount > 350}
               className={`px-4 py-2 rounded-xl ${
-                  timeRemaining > 900 || wordCount < 200 || wordCount > 350
+                  timeRemaining > 900 || wordCount < 250 || wordCount > 350
                   ? 'bg-gray-300 cursor-not-allowed'
                   : 'bg-black text-white'
               }`}
               title={
                   timeRemaining > 900
                     ? `Please wait ${timeRemaining - 900} more seconds`
-                    : wordCount < 200 
-                      ? `Need ${200 - wordCount} more words` 
+                    : wordCount < 250 
+                      ? `Need ${250 - wordCount} more words` 
                       : wordCount > 350 
                         ? `Remove ${wordCount - 350} words` 
                     : ''
@@ -1657,11 +1744,41 @@ Verbosity and Reasoning Effort:
         </ul>
       </div>
 
+      {meta.group === "AI-CONV" && (
+        <>
+          <div className="mb-6 p-4 bg-green-50 border-2 border-green-300 rounded-xl">
+            <p className="text-sm text-green-900">
+              <span className="font-semibold">Remember:</span> There is <u>no penalty for AI-generated content or for the amount of effort you put in</u>. As long as the writing is free of technical errors and organizationally sound, you will likely receive a good grade. You do not need to use the entire allotted time!
+            </p>
+          </div>
+          <hr className="mb-6 border-t-2 border-gray-300" />
+        </>
+      )}
+
+{meta.group === "SELF-CONV" && (
+        <>
+          <div className="mb-6 p-4 bg-green-50 border-2 border-green-300 rounded-xl">
+            <p className="text-sm text-green-900">
+              <span className="font-semibold">Remember:</span> There is <u>no penalty for not using the entire allotted time</u>. As long as the writing is free of technical errors and organizationally sound, you will likely receive a good grade.
+            </p>
+          </div>
+          <hr className="mb-6 border-t-2 border-gray-300" />
+        </>
+      )}
+
       {isAI ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 min-h-[520px]">
           <div>{EditorBox}</div>
           <div className="border rounded-2xl p-4">
-            <AIChatPanel messages={aiMessages} onSend={sendToAI} draft={chatDraft} setDraft={setChatDraft} isLoading={isAILoading} />
+            <AIChatPanel 
+              messages={aiMessages} 
+              onSend={sendToAI} 
+              draft={chatDraft} 
+              setDraft={setChatDraft} 
+              isLoading={isAILoading}
+              queryCount={aiQueryCount}
+              maxQueries={MAX_AI_QUERIES}
+            />
           </div>
         </div>
       ) : (
@@ -1726,10 +1843,11 @@ Verbosity and Reasoning Effort:
 };
 
 // ---- View 4: Survey ----
-const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }>=({ meta: _meta, onSubmit })=>{
+const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }>=({ meta, onSubmit })=>{
   const [q1, setQ1] = useState("");
   const [q2, setQ2] = useState("");
   const [q3Items, setQ3Items] = useState<string[]>(["", ""]); // Start with 2 empty items
+  const [q4, setQ4] = useState(""); // AI strategy question (only for AI groups)
   
   const addQ3Item = () => {
     setQ3Items([...q3Items, ""]);
@@ -1749,7 +1867,8 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
 
   // Check if at least one q3 item is filled
   const hasQ3Response = q3Items.some(item => item.trim().length > 0);
-  const canSubmit = q1 && q2 && hasQ3Response;
+  const isAIGroup = meta.group.startsWith("AI");
+  const canSubmit = q1 && q2 && hasQ3Response && (!isAIGroup || q4.trim().length > 0);
 
   return (
     <Shell
@@ -1767,7 +1886,7 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
                 ? 'bg-black text-white' 
                 : 'bg-gray-300 text-gray-600 cursor-not-allowed'
             }`}
-            onClick={()=> onSubmit({ q1, q2, q3: q3Items })}
+            onClick={()=> onSubmit({ q1, q2, q3: q3Items, q4: isAIGroup ? q4 : null })}
             disabled={!canSubmit}
           >
           Submit & Finish
@@ -1834,6 +1953,19 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
             </button>
           </div>
         </div>
+        
+        {/* AI Strategy Question (only for AI groups) */}
+        {isAIGroup && (
+          <label className="block">
+            <div className="mb-1 font-medium">Briefly, what was your strategy in using AI to complete your writing task?</div>
+            <textarea
+              className="w-full border rounded-xl p-2 min-h-[100px]"
+              placeholder="Describe your approach to using the AI assistant..."
+              value={q4}
+              onChange={(e) => setQ4(e.target.value)}
+            />
+          </label>
+        )}
       </div>
     </Shell>
   );
@@ -1901,7 +2033,6 @@ const StudyApp: React.FC = () => {
     nudgeThreshold: 0.5,
     finalThreshold: 0.35,
     maxNudges: 5,
-    nudgeCooldownMs: 15000,
   });
 
   // Track if we've already banned for finalStrike or fullscreen violations
@@ -1981,7 +2112,7 @@ const StudyApp: React.FC = () => {
         console.error('❌ Failed to initialize session:', error);
         
         // Check if participant is blocked
-        if (error.message === 'already_completed' || error.message === 'writing_started' || error.message === 'banned') {
+        if (error.message === 'already_completed' || error.message === 'writing_started' || error.message === 'banned' || error.message === 'already_started') {
           console.log('🚫 Participant blocked:', error.message);
           setBlocked(error.message);
           setLoaded(true);
@@ -2102,6 +2233,7 @@ const StudyApp: React.FC = () => {
       blocked === 'fullscreen_violations' ? 'Session Terminated' :
       blocked === 'supabase_error' ? 'Configuration Error' :
       blocked === 'initialization_error' ? 'System Error' :
+      blocked === 'already_started' ? 'Session Already Started' :
       'Already Participated'
     }>
       <div className="prose max-w-none">
@@ -2151,12 +2283,32 @@ const StudyApp: React.FC = () => {
               Please contact the researcher with your Prolific ID or try refreshing the page. If you decide to try later, <a href="https://app.prolific.com/submissions/complete?cc=C182OX5Y" className="text-blue-600 underline">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C182OX5Y.
             </p>
           </>
+        ) : blocked === 'already_started' ? (
+          <>
+            <h2 className="text-xl font-semibold text-red-600">Session Already Started</h2>
+            <p className="text-red-600">
+              Our records show that you have already started this study session.
+            </p>
+            <p className="text-gray-700 mt-3">
+              Once you begin the study, you cannot restart or rejoin if you leave the session. This policy ensures data integrity and prevents participants from seeing study materials multiple times.
+            </p>
+            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+              <p className="font-semibold text-red-800 mb-2">What to do next:</p>
+              <p className="text-sm text-red-700">
+                Please <a href="https://app.prolific.com/submissions/complete?cc=C16B0MLX" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: <span className="font-mono font-bold">C16B0MLX</span>.
+              </p>
+            </div>
+            <div className="mt-6 p-4 bg-blue-50 rounded-lg">
+              <p className="text-sm font-semibold">If you believe this is an error:</p>
+              <p className="text-sm">Please contact the researcher with your Prolific ID.</p>
+            </div>
+          </>
         ) : (
           <>
             <h2 className="text-xl font-semibold text-red-600">Study Already Completed</h2>
             <p>
               Our records show that you have already {blocked === 'already_completed' ? 'completed' : 'started'} this study.
-              Each participant can only complete the study once. If you started writing but abandoned the session, we sadly cannot allow you to restart. <a href="https://app.prolific.com/submissions/complete?cc=C16B0MLX" className="text-blue-600 underline">Click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C16B0MLX.
+              Each participant can only complete the study once. <a href="https://app.prolific.com/submissions/complete?cc=C16B0MLX" className="text-blue-600 underline">Click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C16B0MLX.
             </p>
             <div className="mt-6 p-4 bg-blue-50 rounded-lg">
               <p className="text-sm font-semibold">If you believe this is an error:</p>
