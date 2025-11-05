@@ -1385,7 +1385,7 @@ const EditorView: React.FC<{
   const [showTimeExpiredWarning, setShowTimeExpiredWarning] = useState(false); // Show warning when time is up but word count invalid
   const [showWordCountWarning, setShowWordCountWarning] = useState<false | '10min' | '5min' | '2min'>(false); // Word count warnings at intervals
   const timeoutHandledRef = useRef(false); // Track if we've already handled timer expiration
-  const [graceTimeRemaining, setGraceTimeRemaining] = useState<number | null>(null); // Grace period timer (5 minutes)
+  const [graceTimeRemaining, setGraceTimeRemaining] = useState<number | null>(null); // Grace period timer (3 minutes)
   const graceTimeoutHandledRef = useRef(false); // Track if we've handled grace period expiration
   
   // Update word count whenever text changes
@@ -1451,7 +1451,7 @@ const EditorView: React.FC<{
     } else {
         // If word count is invalid, show warning and start grace period
         setShowTimeExpiredWarning(true);
-        setGraceTimeRemaining(DEV_MODE ? 30 : 5 * 60); // DEV: 30 seconds, PROD: 5 minutes grace period
+        setGraceTimeRemaining(DEV_MODE ? 30 : 3 * 60); // DEV: 30 seconds, PROD: 3 minutes grace period
       }
     }
   }, [timeRemaining, wordCount, text, aiMessages, onNext]);
