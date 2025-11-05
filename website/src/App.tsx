@@ -1373,7 +1373,9 @@ const EditorView: React.FC<{
   const [aiQueryCount, setAiQueryCount] = useState(0); // Track number of AI queries sent
   const MAX_AI_QUERIES = 15; // Maximum number of AI queries allowed per session
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
-  const [timeRemaining, setTimeRemaining] = useState(DEV_MODE ? 0 : 20 * 60); // 20 minutes in seconds
+  const TOTAL_TIME = DEV_MODE ? 30 : 20 * 60; // DEV: 1 minute, PROD: 20 minutes
+  const MIN_TIME_REQUIRED = DEV_MODE ? 15 : 5 * 60; // DEV: 15 seconds, PROD: 5 minutes (25% of total time)
+  const [timeRemaining, setTimeRemaining] = useState(TOTAL_TIME);
   const [showReminder, setShowReminder] = useState<false | '5min' | '1min'>(false);
   const [wordCount, setWordCount] = useState(0);
   const [showConfirmation, setShowConfirmation] = useState(false);
@@ -1382,26 +1384,27 @@ const EditorView: React.FC<{
   const [showBrainstormOutline, setShowBrainstormOutline] = useState(true); // Control brainstorm visibility
   const [showTimeExpiredWarning, setShowTimeExpiredWarning] = useState(false); // Show warning when time is up but word count invalid
   const [showWordCountWarning, setShowWordCountWarning] = useState<false | '10min' | '5min' | '2min'>(false); // Word count warnings at intervals
+  const timeoutHandledRef = useRef(false); // Track if we've already handled timer expiration
+  const [graceTimeRemaining, setGraceTimeRemaining] = useState<number | null>(null); // Grace period timer (5 minutes)
+  const graceTimeoutHandledRef = useRef(false); // Track if we've handled grace period expiration
   
   // Update word count whenever text changes
   useEffect(() => {
     const words = text.trim().split(/\s+/).filter(word => word.length > 0);
     setWordCount(words.length);
     
-    // Clear warnings if user fixes their word count
-    if (words.length >= 250 && words.length <= 350) {
-      if (showTimeExpiredWarning) {
-        setShowTimeExpiredWarning(false);
-      }
+    // Clear regular word count warnings (but not grace period)
+    const isValidWordCount = words.length >= 250 && words.length <= 385;
+    if (isValidWordCount) {
       if (showWordCountWarning) {
         setShowWordCountWarning(false);
       }
     }
-  }, [text, showTimeExpiredWarning, showWordCountWarning]);
+  }, [text, showWordCountWarning]);
 
-  // Timer effect
+  // Timer countdown effect
   React.useEffect(() => {
-    if (!DEV_MODE && timeRemaining > 0) {
+    if (timeRemaining > 0) {
       const timer = setTimeout(() => {
         setTimeRemaining(prev => {
           const newTime = prev - 1;
@@ -1420,7 +1423,7 @@ const EditorView: React.FC<{
           if (isWordCountInvalid) {
             if (newTime === 600) { // 10 minutes
               setShowWordCountWarning('10min');
-              setTimeout(() => setShowWordCountWarning(false), 30000); // Show for 15 seconds
+              setTimeout(() => setShowWordCountWarning(false), 30000); // Show for 30 seconds
             } else if (newTime === 300) { // 5 minutes
               setShowWordCountWarning('5min');
               setTimeout(() => setShowWordCountWarning(false), 30000);
@@ -1434,16 +1437,44 @@ const EditorView: React.FC<{
         });
       }, 1000);
       return () => clearTimeout(timer);
-    } else if (!DEV_MODE && timeRemaining === 0) {
-      // Only force proceed if word count is valid (250-350 words)
-      if (wordCount >= 250 && wordCount <= 350) {
+    }
+  }, [timeRemaining, wordCount]);
+
+  // Handle timer expiration (separate effect to avoid re-triggering)
+  React.useEffect(() => {
+    if (timeRemaining === 0 && !timeoutHandledRef.current) {
+      timeoutHandledRef.current = true; // Mark as handled
+      
+      // Only force proceed if word count is valid (at least 250 words, allow slightly over 350)
+      if (wordCount >= 250 && wordCount <= 385) {
         onNext(text, aiMessages);
-      } else {
-        // If word count is invalid, show warning to user
+    } else {
+        // If word count is invalid, show warning and start grace period
         setShowTimeExpiredWarning(true);
+        setGraceTimeRemaining(DEV_MODE ? 30 : 5 * 60); // DEV: 30 seconds, PROD: 5 minutes grace period
       }
     }
   }, [timeRemaining, wordCount, text, aiMessages, onNext]);
+
+  // Grace period timer countdown
+  React.useEffect(() => {
+    if (graceTimeRemaining !== null && graceTimeRemaining > 0) {
+      const timer = setTimeout(() => {
+        setGraceTimeRemaining(prev => prev! - 1);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [graceTimeRemaining]);
+
+  // Handle grace period expiration - force submit regardless of word count
+  React.useEffect(() => {
+    if (graceTimeRemaining === 0 && !graceTimeoutHandledRef.current) {
+      graceTimeoutHandledRef.current = true;
+      
+      // Force submit regardless of word count
+      onNext(text, aiMessages);
+    }
+  }, [graceTimeRemaining, wordCount, text, aiMessages, onNext]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -1614,7 +1645,7 @@ Verbosity and Reasoning Effort:
           <div className="text-xs text-gray-500">Required length: 250-350 words</div>
         </div>
       </div>
-      {isAI && !hasUsedAI && (
+      {isAI && !hasUsedAI && !DEV_MODE && (
         <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
           <p className="text-blue-900 font-semibold mb-1">📝 Please start with the AI Assistant</p>
           <p className="text-blue-800">Use the AI panel on the right to generate a first draft or story components before editing here.</p>
@@ -1642,10 +1673,10 @@ Verbosity and Reasoning Effort:
         }}
         rows={18}
         className="w-full border rounded-xl p-3 focus:outline-none focus:ring h-full"
-        placeholder={isAI && !hasUsedAI ? "Please use the AI Assistant first..." : "Write here... (250-350 words)"}
+        placeholder={isAI && !hasUsedAI && !DEV_MODE ? "Please use the AI Assistant first..." : "Write here... (250-350 words)"}
         spellCheck="true"
-        disabled={isAI && !hasUsedAI}
-        style={isAI && !hasUsedAI ? { backgroundColor: '#f9fafb', cursor: 'not-allowed' } : {}}
+        disabled={isAI && !hasUsedAI && !DEV_MODE}
+        style={isAI && !hasUsedAI && !DEV_MODE ? { backgroundColor: '#f9fafb', cursor: 'not-allowed' } : {}}
       />
       <div className="mt-3 flex justify-end items-center text-xs text-gray-500">
         <div>{isAI ? 'Note: Copy and paste is allowed only within the page' : 'Note: Copy and paste is disabled'}</div>
@@ -1658,40 +1689,6 @@ Verbosity and Reasoning Effort:
       title="Step 2 · Writing"
       footer={
         <div className="flex flex-col items-center gap-4">
-          {showTimeExpiredWarning && (
-            <div className="bg-red-100 border-2 border-red-500 text-red-800 px-6 py-3 rounded-lg text-base font-semibold">
-              ⏰ Time's up! However, you must meet the word count requirement (250-350 words) before submitting. 
-              {wordCount < 250 && ` Add ${250 - wordCount} more words.`}
-              {wordCount > 350 && ` Remove ${wordCount - 350} words.`}
-            </div>
-          )}
-          {showWordCountWarning && !showTimeExpiredWarning && (
-            <div className="bg-red-100 border-3 border-red-600 text-red-900 px-8 py-4 rounded-lg text-lg font-bold shadow-lg animate-pulse">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-2xl">⚠️</span>
-                <span>
-                  {showWordCountWarning === '10min' && 'You have 10 minutes remaining!'}
-                  {showWordCountWarning === '5min' && 'You have 5 minutes remaining!'}
-                  {showWordCountWarning === '2min' && 'You have 2 minutes remaining!'}
-                </span>
-              </div>
-              <div className="text-base">
-                Remember: Your story MUST be within 250-350 words. You will not be allowed to submit your story if it's not within the word limit!
-              </div>
-              <div className="mt-2 text-base font-semibold">
-                Current word count: {wordCount} words
-                {wordCount < 250 && ` (Need ${250 - wordCount} more words)`}
-                {wordCount > 350 && ` (Remove ${wordCount - 350} words)`}
-              </div>
-            </div>
-          )}
-          {showReminder && !showTimeExpiredWarning && !showWordCountWarning && (
-            <div className="bg-yellow-100 border-2 border-yellow-400 text-yellow-700 px-6 py-3 rounded-lg text-base font-semibold animate-pulse">
-              {showReminder === '5min' 
-                ? "⏰ 5 minutes remaining! Start wrapping up your story."
-                : "⚠️ Only 1 minute left! Finish your thoughts quickly!"}
-            </div>
-          )}
           {showConfirmation ? (
             <div className="flex flex-col items-center gap-3">
               <p className="text-sm text-gray-600">Are you sure you want to submit your story?</p>
@@ -1712,10 +1709,11 @@ Verbosity and Reasoning Effort:
             </div>
           ) : (
             <>
-              {(timeRemaining > 900 || wordCount < 250 || wordCount > 350) && (
+              {/* Show validation messages only if not in grace period or if word count is still < 250 */}
+              {!graceTimeRemaining && (timeRemaining > MIN_TIME_REQUIRED || wordCount < 250 || wordCount > 350) && (
                 <div className="text-sm text-gray-600 text-center">
-                  {timeRemaining > 900 && (
-                    <div>Please spend at least 5 minutes writing ({(20 * 60) - timeRemaining} / 300 seconds)</div>
+                  {timeRemaining > MIN_TIME_REQUIRED && (
+                    <div>Please spend at least {DEV_MODE ? '15 seconds' : '5 minutes'} writing ({TOTAL_TIME - timeRemaining} / {MIN_TIME_REQUIRED} seconds)</div>
                   )}
                   {wordCount < 250 && (
                     <div>Required: 250-350 words (currently {wordCount} words)</div>
@@ -1725,21 +1723,36 @@ Verbosity and Reasoning Effort:
                   )}
                 </div>
               )}
+              {graceTimeRemaining && wordCount < 250 && (
+                <div className="text-sm text-red-600 text-center font-semibold">
+                  ⚠️ Need at least {250 - wordCount} more words to submit now
+                </div>
+              )}
             <button
               onClick={() => setShowConfirmation(true)}
-                disabled={timeRemaining > 900 || wordCount < 250 || wordCount > 350}
+              disabled={
+                (timeRemaining > MIN_TIME_REQUIRED) || 
+                (wordCount < 250) || 
+                (graceTimeRemaining && wordCount > 385) ||
+                (!graceTimeRemaining && wordCount > 350)
+              }
               className={`px-4 py-2 rounded-xl ${
-                  timeRemaining > 900 || wordCount < 250 || wordCount > 350
+                (timeRemaining > MIN_TIME_REQUIRED) || 
+                (wordCount < 250) || 
+                (graceTimeRemaining && wordCount > 385) ||
+                (!graceTimeRemaining && wordCount > 350)
                   ? 'bg-gray-300 cursor-not-allowed'
                   : 'bg-black text-white'
               }`}
               title={
-                  timeRemaining > 900
-                    ? `Please wait ${timeRemaining - 900} more seconds`
-                    : wordCount < 250 
-                      ? `Need ${250 - wordCount} more words` 
-                      : wordCount > 350 
-                        ? `Remove ${wordCount - 350} words` 
+                timeRemaining > MIN_TIME_REQUIRED
+                  ? `Please wait ${timeRemaining - MIN_TIME_REQUIRED} more seconds`
+                  : wordCount < 250 
+                    ? `Need ${250 - wordCount} more words` 
+                    : (graceTimeRemaining && wordCount > 385)
+                      ? `Story is too long (${wordCount} words). Grace period allows up to 385 words.`
+                    : (!graceTimeRemaining && wordCount > 350)
+                      ? `Reduce to 350 words or less` 
                     : ''
               }
             >
@@ -1750,8 +1763,80 @@ Verbosity and Reasoning Effort:
         </div>
       }
     >
-      {/* Timer - Fixed to top-right */}
-      <div className="fixed top-4 right-4 z-40">
+      {/* Timer and Warnings - Fixed to top-right */}
+      <div className="fixed top-4 right-4 z-40 flex flex-col items-end gap-3 max-w-md">
+        {/* Grace Period Warning - Highest priority */}
+        {showTimeExpiredWarning && graceTimeRemaining !== null && graceTimeRemaining > 0 && (
+          <div className={`p-4 border-2 rounded-xl shadow-2xl ${
+            wordCount >= 250 && wordCount <= 385 
+              ? 'bg-green-100 border-green-500 text-green-900'
+              : 'bg-orange-100 border-orange-500 text-orange-900'
+          }`}>
+            <div className="text-lg font-bold mb-2">
+              {wordCount >= 250 && wordCount <= 385 ? (
+                <>✅ Ready to Submit!</>
+              ) : (
+                <>⏰ Time&apos;s Up! Grace Period</>
+              )}
+            </div>
+            <div className="mb-2 text-sm">
+              {wordCount >= 250 && wordCount <= 385 ? (
+                <span className="text-green-800">Word count is valid. You can submit!</span>
+              ) : (
+                <span>Story must be <span className="font-bold">250-385 words</span>.</span>
+              )}
+            </div>
+            <div className="mb-2 text-sm">
+              {wordCount < 250 && (
+                <span className="text-red-700 font-bold">⚠️ Need {250 - wordCount} more words!</span>
+              )}
+              {wordCount >= 250 && wordCount <= 385 && (
+                <span className="text-green-700 font-bold">✓ {wordCount} words</span>
+              )}
+              {wordCount > 385 && (
+                <span className="text-orange-700 font-bold">Remove {wordCount - 385} words</span>
+              )}
+            </div>
+            <div className={`font-bold text-base ${
+              wordCount >= 250 && wordCount <= 385 ? 'text-green-700' : 'text-red-700'
+            }`}>
+              ⏱️ Grace: {formatTime(graceTimeRemaining!)}
+            </div>
+            <div className="text-xs mt-1">
+              {wordCount >= 250 && wordCount <= 385 ? (
+                <span className="text-green-800">Submit anytime.</span>
+              ) : (
+                <span className={wordCount >= 250 && wordCount <= 385 ? 'text-green-800' : 'text-orange-800'}>
+                  Auto-submit when timer expires.
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+        
+        {/* Word Count Warning - High priority (if no grace period) */}
+        {showWordCountWarning && !showTimeExpiredWarning && (
+          <div className="p-4 bg-red-100 border-2 border-red-600 text-red-900 rounded-xl shadow-2xl">
+            <div className="text-lg font-bold mb-2 flex items-center gap-2">
+              <span className="text-xl">⚠️</span>
+              <span>
+                {showWordCountWarning === '10min' && '10 min left!'}
+                {showWordCountWarning === '5min' && '5 min left!'}
+                {showWordCountWarning === '2min' && '2 min left!'}
+              </span>
+            </div>
+            <div className="text-sm mb-2">
+              Story MUST be <span className="font-bold">250-350 words</span>!
+            </div>
+            <div className="text-sm font-semibold">
+              Current: <span className="text-base">{wordCount} words</span>
+              {wordCount < 250 && <span className="text-red-700"> (Need {250 - wordCount} more)</span>}
+              {wordCount > 350 && <span className="text-red-700"> (Remove {wordCount - 350})</span>}
+            </div>
+          </div>
+        )}
+        
+        {/* Timer */}
         <div 
           className={`px-4 py-2 rounded-lg font-bold text-base shadow-lg ${
             timeRemaining <= 60 
@@ -1763,40 +1848,54 @@ Verbosity and Reasoning Effort:
         >
           ⏱️ {formatTime(timeRemaining)}
         </div>
+        
+        {/* Time reminder below timer */}
+        {showReminder && !showTimeExpiredWarning && (
+          <div className="px-4 py-2 rounded-lg text-sm font-semibold shadow-lg bg-yellow-100 border-2 border-yellow-400 text-yellow-700 animate-pulse">
+            {showReminder === '5min' 
+              ? "⏰ 5 min left! Wrap up."
+              : "⚠️ 1 min left! Finish!"}
+          </div>
+        )}
       </div>
       
-      {/* Story Guidelines Box */}
-      <div className="mb-6 p-4 bg-blue-50 border-2 border-blue-300 rounded-xl">
-        <h3 className="font-bold text-blue-900 mb-2 text-base">📖 Story Guidelines</h3>
-        <p className="text-sm text-blue-900 mb-2">
-          To help spark ideas and make your story easier to shape, we've added a few gentle guidelines to focus your creativity:
-        </p>
-        <ul className="list-disc pl-5 space-y-1 text-sm text-blue-800">
-          <li>Write the story from a <span className="font-bold">first-person</span> point of view.</li>
-          <li>The story should take place over <span className="font-bold">no more than one day</span>.</li>
-          <li>The story should center on a <span className="font-bold">decision or dilemma</span>.</li>
-        </ul>
-      </div>
-
-      {meta.group === "AI-CONV" && (
+      {/* Story Guidelines (when grace period not active) */}
+      {!showTimeExpiredWarning && (
         <>
-          <div className="mb-6 p-4 bg-green-50 border-2 border-green-300 rounded-xl">
-            <p className="text-sm text-green-900">
-              <span className="font-semibold">Remember:</span> There is <u>no penalty for AI-generated content or for the amount of effort you put in</u>. As long as the writing is free of technical errors and organizationally sound, you will likely receive a good grade. You do not need to use the entire allotted time!
+          {/* Story Guidelines Box */}
+          <div className="mb-6 p-4 bg-blue-50 border-2 border-blue-300 rounded-xl">
+            <h3 className="font-bold text-blue-900 mb-2 text-base">📖 Story Guidelines</h3>
+            <p className="text-sm text-blue-900 mb-2">
+              To help spark ideas and make your story easier to shape, we've added a few gentle guidelines to focus your creativity:
             </p>
+            <ul className="list-disc pl-5 space-y-1 text-sm text-blue-800">
+              <li>Write the story from a <span className="font-bold">first-person</span> point of view.</li>
+              <li>The story should take place over <span className="font-bold">no more than one day</span>.</li>
+              <li>The story should center on a <span className="font-bold">decision or dilemma</span>.</li>
+            </ul>
           </div>
-          <hr className="mb-6 border-t-2 border-gray-300" />
-        </>
-      )}
 
-{meta.group === "SELF-CONV" && (
-        <>
-          <div className="mb-6 p-4 bg-green-50 border-2 border-green-300 rounded-xl">
-            <p className="text-sm text-green-900">
-              <span className="font-semibold">Remember:</span> There is <u>no penalty for not using the entire allotted time</u>. As long as the writing is free of technical errors and organizationally sound, you will likely receive a good grade.
-            </p>
-          </div>
-          <hr className="mb-6 border-t-2 border-gray-300" />
+          {meta.group === "AI-CONV" && (
+            <>
+              <div className="mb-6 p-4 bg-green-50 border-2 border-green-300 rounded-xl">
+                <p className="text-sm text-green-900">
+                  <span className="font-semibold">Remember:</span> There is <u>no penalty for AI-generated content or for the amount of effort you put in</u>. As long as the writing is free of technical errors and organizationally sound, you will likely receive a good grade. You do not need to use the entire allotted time!
+                </p>
+              </div>
+              <hr className="mb-6 border-t-2 border-gray-300" />
+            </>
+          )}
+
+          {meta.group === "SELF-CONV" && (
+            <>
+              <div className="mb-6 p-4 bg-green-50 border-2 border-green-300 rounded-xl">
+                <p className="text-sm text-green-900">
+                  <span className="font-semibold">Remember:</span> There is <u>no penalty for not using the entire allotted time</u>. As long as the writing is free of technical errors and organizationally sound, you will likely receive a good grade.
+                </p>
+              </div>
+              <hr className="mb-6 border-t-2 border-gray-300" />
+            </>
+          )}
         </>
       )}
 
@@ -1990,7 +2089,7 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
         
         {/* AI Strategy Question (only for AI groups) */}
         {isAIGroup && (
-          <label className="block">
+        <label className="block">
             <div className="mb-1 font-medium">Briefly, what was your strategy in using AI to complete your writing task?</div>
             <textarea
               className="w-full border rounded-xl p-2 min-h-[100px]"
@@ -1998,7 +2097,7 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
               value={q4}
               onChange={(e) => setQ4(e.target.value)}
             />
-          </label>
+        </label>
         )}
       </div>
     </Shell>
@@ -2481,7 +2580,7 @@ const StudyApp: React.FC = () => {
 
     {/* Development mode attention score display */}
     {DEV_MODE && (
-      <div className="fixed top-16 right-4 z-50 bg-gray-900 text-white p-3 rounded-lg text-sm font-mono shadow-lg">
+      <div className="fixed bottom-4 right-4 z-50 bg-gray-900 text-white p-3 rounded-lg text-sm font-mono shadow-lg">
         <div className="text-xs text-gray-300 mb-1">Attention Score (Dev Mode)</div>
         <div className="flex items-center gap-2">
           <div className="w-20 h-2 bg-gray-700 rounded-full overflow-hidden">
@@ -2519,7 +2618,7 @@ const StudyApp: React.FC = () => {
     }}>
     {/* Development mode attention score display */}
     {DEV_MODE && (
-      <div className="fixed top-16 right-4 z-50 bg-gray-900 text-white p-3 rounded-lg text-sm font-mono shadow-lg">
+      <div className="fixed bottom-4 right-4 z-50 bg-gray-900 text-white p-3 rounded-lg text-sm font-mono shadow-lg">
         <div className="text-xs text-gray-300 mb-1">Attention Score (Dev Mode)</div>
         <div className="flex items-center gap-2">
           <div className="w-20 h-2 bg-gray-700 rounded-full overflow-hidden">
