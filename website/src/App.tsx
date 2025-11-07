@@ -29,7 +29,9 @@ const DEV_MODE = false;
 
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
-const GROUPS: GroupKey[] = ["AI-DIV", "AI-CONV", "SELF-DIV", "SELF-CONV"];
+// Temporarily exclude AI-CONV to balance group sizes
+const GROUPS: GroupKey[] = ["AI-DIV", "SELF-DIV", "SELF-CONV"];
+// const GROUPS: GroupKey[] = ["AI-DIV", "AI-CONV", "SELF-DIV", "SELF-CONV"]; // Full randomization
 
 // ---- Utilities ----
 const qs = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
@@ -2162,7 +2164,7 @@ const StudyApp: React.FC = () => {
   // Attention tracking for brainstorm (step 3) and editor (step 4)
   const attn = useWritingAttention(step === 3 || step === 4, {
     graceMs: 5000,
-    halfLifeMs: 15000,
+    halfLifeMs: 20000,
     nudgeThreshold: 0.5,
     finalThreshold: 0.35,
     maxNudges: 5,
