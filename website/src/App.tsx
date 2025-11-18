@@ -30,7 +30,7 @@ const DEV_MODE = false;
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
 // Temporarily exclude AI-CONV to balance group sizes
-const GROUPS: GroupKey[] = ["AI-DIV"];
+const GROUPS: GroupKey[] = ["SELF-DIV"];
 // const GROUPS: GroupKey[] = ["AI-DIV", "AI-CONV", "SELF-DIV", "SELF-CONV"]; // Full randomization
 
 // ---- Utilities ----
