@@ -35,7 +35,7 @@ const SNAPSHOT_INTERVAL_MS = 5000; // how often to snapshot editor/chat text (ms
 
 // Writing-phase timing (seconds). Change these; UI copy derives from them.
 const TOTAL_TIME_SEC = DEV_MODE ? 30 : 7 * 60; // allotted writing time
-const MIN_TIME_REQUIRED_SEC = DEV_MODE ? 15 : 1 * 60; // must write at least this long before submit unlocks
+const MIN_TIME_REQUIRED_SEC = DEV_MODE ? 15 : 3 * 60; // must write at least this long before submit unlocks
 const GRACE_PERIOD_SEC = DEV_MODE ? 30 : 1 * 60; // extra time if word count invalid when clock hits 0
 const READ_WAIT_SEC = DEV_MODE ? 0 : 20; // Instructions / Prompt "continue" unlock delay
 const REMINDER_AT_SEC = [3 * 60, 1 * 60] as const; // show wrap-up reminders at these remaining times
