@@ -2,13 +2,14 @@ import React, { useEffect, useRef, useState } from "react";
 import { ComplianceGate } from "./ComplianceGate";
 import { useWritingAttention } from "./useWritingAttention"; 
 import { supabase } from './lib/supabase';
+import miniProjectorImg from './mini_projector.webp';
 
 
 /*
   Prolific User Study Skeleton (TypeScript/React, single-file)
   -----------------------------------------------------------
   Features:
-  - 4 sequential views: Instructions → Brainstorm → Editor → Survey
+  - Sequential views: Instructions → Prompt → Editor → Survey
   - 2×2 randomized groups with balancing: (AI vs SELF) × (Divergent vs Convergent)
   - Tracks Prolific ID from URL (?PROLIFIC_PID=...)
   - Persists assignment and progress in localStorage (placeholder for a real backend)
@@ -25,13 +26,42 @@ import { supabase } from './lib/supabase';
 */
 
 // Development mode - set to true to disable all timers for faster development
-const DEV_MODE = true;
+const DEV_MODE = false;
+
+const MIN_WORDS = 100;
+const MAX_WORDS = 125;
+const GRACE_MAX_WORDS = 125;
+const SNAPSHOT_INTERVAL_MS = 5000; // how often to snapshot editor/chat text (ms)
+
+// Writing-phase timing (seconds). Change these; UI copy derives from them.
+const TOTAL_TIME_SEC = DEV_MODE ? 30 : 7 * 60; // allotted writing time
+const MIN_TIME_REQUIRED_SEC = DEV_MODE ? 15 : 1 * 60; // must write at least this long before submit unlocks
+const GRACE_PERIOD_SEC = DEV_MODE ? 30 : 1 * 60; // extra time if word count invalid when clock hits 0
+const READ_WAIT_SEC = DEV_MODE ? 0 : 20; // Instructions / Prompt "continue" unlock delay
+const REMINDER_AT_SEC = [3 * 60, 1 * 60] as const; // show wrap-up reminders at these remaining times
+const WORD_COUNT_WARN_AT_SEC = [2 * 60] as const; // warn if word count still invalid
+const TIMER_WARN_YELLOW_SEC = 3 * 60; // timer turns yellow at or below this remaining
+const TIMER_WARN_RED_SEC = 1 * 60; // timer turns red at or below this remaining
+
+const OPENAI_MODEL = "gpt-5-mini";
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) {
+    return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  }
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (secs === 0) {
+    return `${mins} minute${mins === 1 ? "" : "s"}`;
+  }
+  return `${mins} minute${mins === 1 ? "" : "s"} ${secs} second${secs === 1 ? "" : "s"}`;
+}
 
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
 // Temporarily exclude AI-CONV to balance group sizes
-const GROUPS: GroupKey[] = ["AI-DIV"];
-// const GROUPS: GroupKey[] = ["AI-DIV", "AI-CONV", "SELF-DIV", "SELF-CONV"]; // Full randomization
+// const GROUPS: GroupKey[] = ["SELF-CONV"];
+const GROUPS: GroupKey[] = ["AI-DIV", "AI-CONV", "SELF-DIV", "SELF-CONV"]; // Full randomization
 
 // ---- Utilities ----
 const qs = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
@@ -161,6 +191,59 @@ async function startSession(prolificId: string) {
   //   throw error;
   // }
   return sessionId;
+}
+
+/** Minimal live call to verify the OpenAI key + model work before AI participants write. */
+async function checkAIAvailable(): Promise<{ ok: boolean; error?: string }> {
+  const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
+  if (!apiKey || apiKey === "YOUR_OPENAI_API_KEY_HERE") {
+    return { ok: false, error: "missing_api_key" };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL,
+        messages: [{ role: "user", content: "Reply with exactly the word OK." }],
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const err = await response.json();
+        detail = err.error?.message || detail;
+      } catch {
+        // ignore parse errors
+      }
+      return { ok: false, error: detail };
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      return { ok: false, error: "empty_response" };
+    }
+    return { ok: true };
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.name === "AbortError"
+          ? "timeout"
+          : error.message
+        : "network_error";
+    return { ok: false, error: message };
+  }
 }
 
 
@@ -325,7 +408,7 @@ async function assignSimpleRandom(prolificId: string): Promise<GroupKey> {
 
 // ---- Study Flow State ----
 
-type Step = 1 | 2 | 3 | 4 | 5; // 1=Instructions, 2=Brainstorm, 3=Editor, 4=Survey
+type Step = 1 | 2 | 3 | 4 | 5; // 1=Instructions, 2=Prompt, 4=Editor, 5=Survey
 
 interface SessionMeta {
   prolificId: string;
@@ -359,13 +442,13 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
   const [attempts, setAttempts] = useState(0);
   const [showError, setShowError] = useState(false);
   const [showFinalError, setShowFinalError] = useState(false);
-  const [timeRemaining, setTimeRemaining] = useState(DEV_MODE ? 0 : 20); // 15 second timer
+  const [timeRemaining, setTimeRemaining] = useState(READ_WAIT_SEC); // Instructions read-wait
 
   const correctAnswer = meta.group.includes("SELF") ? "zero_tolerance" : "ai_when_provided";
 
   // Timer effect
   React.useEffect(() => {
-    if (!DEV_MODE && timeRemaining > 0) {
+    if (timeRemaining > 0) {
       const timer = setTimeout(() => setTimeRemaining(prev => prev - 1), 1000);
       return () => clearTimeout(timer);
     }
@@ -435,8 +518,8 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
         )}
         <p className="leading-relaxed">
           Welcome! You'll complete a short creative writing task for a research study. {meta.group.includes("SELF") ? 
-            "Our goal is to understand how people write stories without the use of AI, in particular how people brainstorm, write first drafts, and refine their stories." 
-            : "Our goal is to understand how people write stories with the use of AI, in particular how it might contribute to less diverse stories."
+            "Our goal is to understand how people write creatively without the use of AI." 
+            : "Our goal is to understand how people write creatively with the use of AI."
           } Please read the instructions carefully.
         </p>
         
@@ -449,7 +532,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
             {meta.group.includes("SELF") ? (
               <li><span className="font-bold">Do not use external AI tools</span> (e.g., Google, ChatGPT). We will be monitoring for prohibited AI usage using keystroke data, attention checks, and your final submission. <span className="font-bold text-red-500">If you are caught using AI, we will return your submission.</span></li>
             ) : (
-              <li>You are provided an in-app AI tool to aid in your creative writing task; in fact you are <span className="font-bold">required to use the AI tool when prompted.</span> However, oftentimes the AI tool will not achieve the quality you desire. We encourage you to use the AI tool as a stepping stone and as a helper, but <span className="font-bold">ultimately you are responsible for your own story.</span> Please do not use external AI tools that we do not provide to you.</li>
+              <li>You are provided an in-app AI tool to aid in your creative writing task; in fact you are <span className="font-bold">required to use the AI tool when prompted.</span> However, oftentimes the AI tool will not achieve the quality you desire. We encourage you to use the AI tool as a stepping stone and as a helper, but <span className="font-bold">ultimately you are responsible for your own product pitch.</span> Please do not use external AI tools that we do not provide to you.</li>
             )}
           </ul>
         </div>
@@ -532,353 +615,17 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
   );
 };
 
-// ---- View 2: Brainstorm ----
-const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: string; setValue: (s: string)=>void; sessionId?: string | null }>=({ onNext, meta, value, setValue, sessionId }) => {
-  const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 300); // 5 minutes in seconds
-  const [showConfirmation, setShowConfirmation] = React.useState(false);
-  const [showReminder, setShowReminder] = React.useState<false | '2min' | '30sec'>(false);
-
-  // Brainstorm field states
-  const [quick_ideas, set_quick_ideas] = React.useState('')
-  const [main_char, set_main_char] = React.useState('')
-  const [setting, set_setting] = React.useState('')
-  const [conflict, set_conflict] = React.useState('')
-  const [resolution, set_resolution] = React.useState('')
-  const [plot, set_plot] = React.useState('')
-  
-  // Ref to track current brainstorm value without re-renders
-  const valueRef = React.useRef(value);
-  React.useEffect(() => {
-    valueRef.current = value;
-  }, [value]);
-
-  // Timer countdown effect
-  React.useEffect(() => {
-    if (!DEV_MODE && timeRemaining > 0) {
-      const timer = setTimeout(() => {
-        setTimeRemaining(prev => {
-          const newTime = prev - 1;
-          // Show reminder at 2:00 and 0:30
-          if (newTime === 120) {
-            setShowReminder('2min');
-            setTimeout(() => setShowReminder(false), 10000);
-          } else if (newTime === 30) {
-            setShowReminder('30sec');
-            setTimeout(() => setShowReminder(false), 10000);
-          }
-          return newTime;
-        });
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [timeRemaining]); // Only depend on timeRemaining
-  
-  // Auto-advance when timer expires
-  React.useEffect(() => {
-    if (!DEV_MODE && timeRemaining === 0) {
-      // Save brainstorm data when time runs out
-      const brainstormData = JSON.stringify({
-        main_char,
-        setting,
-        conflict,
-        resolution,
-        plot
-      });
-      setValue(brainstormData);
-      onNext(); // Force proceed when time is up (only in production)
-    }
-  }, [timeRemaining]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Refs to track current brainstorm values without triggering re-renders
-  const brainstormRefs = React.useRef({
-    quick_ideas,
-    main_char,
-    setting,
-    conflict,
-    resolution,
-    plot
-  });
-
-  // Keep refs in sync with state
-  React.useEffect(() => {
-    brainstormRefs.current = {
-      quick_ideas,
-      main_char,
-      setting,
-      conflict,
-      resolution,
-      plot
-    };
-  }, [quick_ideas, main_char, setting, conflict, resolution, plot]);
-
-  // Periodic snapshot tracking for brainstorm phase - save as JSON
-  React.useEffect(() => {
-    if (!sessionId) return;
-    
-    const SNAPSHOT_INTERVAL = 5000; // 5 seconds
-    const lastSavedRef = { text: '' };
-    
-    const snapshotTimer = setInterval(() => {
-      // Compile all brainstorm fields into JSON from refs
-      const brainstormData = JSON.stringify(brainstormRefs.current);
-      
-      if (brainstormData !== lastSavedRef.text) {
-        saveSnapshot(sessionId, 'brainstorm', 'main', brainstormData);
-        lastSavedRef.text = brainstormData;
-      }
-    }, SNAPSHOT_INTERVAL);
-    
-    // Save final snapshot on unmount
-    return () => {
-      clearInterval(snapshotTimer);
-      const brainstormData = JSON.stringify(brainstormRefs.current);
-      
-      if (brainstormData !== lastSavedRef.text) {
-        saveSnapshot(sessionId, 'brainstorm', 'main', brainstormData);
-      }
-    };
-  }, [sessionId]); // Only depend on sessionId
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  // Calculate total word count across all fields
-  const totalWords = React.useMemo(() => {
-    const allText = [main_char, setting, conflict, resolution, plot].join(' ');
-    return allText.trim().split(/\s+/).filter(word => word.length > 0).length;
-  }, [main_char, setting, conflict, resolution, plot]);
-
-  const handleNext = () => {
-    if (!showConfirmation) {
-      setShowConfirmation(true);
-      return;
-    }
-    
-    // Compile brainstorm data as JSON
-    const brainstormData = JSON.stringify({
-      main_char,
-      setting,
-      conflict,
-      resolution,
-      plot
-    });
-    setValue(brainstormData);
-    onNext();
-  };
-
-  return (
-    <Shell
-      title="Step 1 · Brainstorm"
-      footer={
-        <div className="flex flex-col items-center gap-4">
-          {showReminder && (
-            <div className="bg-yellow-100 border-2 border-yellow-400 text-yellow-700 px-6 py-3 rounded-lg text-base font-semibold animate-pulse">
-              {showReminder === '2min'
-                ? "⏰ 2 minutes remaining! Start wrapping up your brainstorming."
-                : "⚠️ Only 30 seconds left! Finish your thoughts quickly!"}
-            </div>
-          )}
-          {showConfirmation ? (
-            <div className="flex flex-col items-center gap-3">
-              <p className="text-sm text-gray-600">Are you sure you're done brainstorming?</p>
-              <div className="flex gap-3">
-                <button 
-                  onClick={() => {
-                    // Compile brainstorm data as JSON
-                    const brainstormData = JSON.stringify({
-                      main_char,
-                      setting,
-                      conflict,
-                      resolution,
-                      plot
-                    });
-                    setValue(brainstormData);
-                    onNext();
-                  }} 
-                  className="px-4 py-2 rounded-xl bg-black text-white"
-                >
-                  Yes, proceed to writing
-                </button>
-                <button 
-                  onClick={() => setShowConfirmation(false)} 
-                  className="px-4 py-2 rounded-xl border border-gray-300"
-                >
-                  No, continue brainstorming
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              {(timeRemaining > 240 || totalWords < 20) && (
-                <div className="text-sm text-gray-600 text-center">
-                  {timeRemaining > 240 && (
-                    <div>Please spend at least 60 seconds brainstorming ({300 - timeRemaining} / 60 seconds)</div>
-                  )}
-                  {totalWords < 20 && (
-                    <div>Please write at least 20 words in your outline ({totalWords} / 20 words)</div>
-                  )}
-                </div>
-              )}
-            <button 
-              onClick={handleNext} 
-                disabled={timeRemaining > 240 || totalWords < 20}
-                className={`px-4 py-2 rounded-xl ${
-                  timeRemaining > 240 || totalWords < 20
-                    ? 'bg-gray-300 cursor-not-allowed text-gray-600'
-                    : 'bg-black text-white'
-                }`}
-                title={
-                  timeRemaining > 240 
-                    ? `Please wait ${timeRemaining - 240} more seconds`
-                    : totalWords < 20
-                      ? `Need ${20 - totalWords} more words`
-                      : ''
-                }
-            >
-              Go to Writing
-            </button>
-            </>
-          )}
-        </div>
-      }
-    >
-      {/* Timer - Fixed to top-right */}
-      <div className="fixed top-4 right-4 z-40">
-        <div 
-          className={`px-4 py-2 rounded-lg font-bold text-base shadow-lg ${
-            timeRemaining <= 30 
-              ? 'bg-red-100 text-red-700 border-2 border-red-500' 
-              : timeRemaining <= 120 
-                ? 'bg-yellow-100 text-yellow-700 border-2 border-yellow-500'
-                : 'bg-blue-100 text-blue-700 border-2 border-blue-500'
-          }`}
-        >
-          ⏱️ {formatTime(timeRemaining)}
-        </div>
-      </div>
-      
-      {/* Story Guidelines Box */}
-      <div className="mb-6 p-4 bg-blue-50 border-2 border-blue-300 rounded-xl">
-        <h3 className="font-bold text-blue-900 mb-2 text-base">📖 Story Guidelines</h3>
-        <p className="text-sm text-blue-900 mb-2">
-          To help spark ideas and make your story easier to shape, we've added a few gentle guidelines to focus your creativity:
-        </p>
-        <ul className="list-disc pl-5 space-y-1 text-sm text-blue-800">
-          <li>Write the story from a <span className="font-bold">first-person</span> point of view.</li>
-          <li>The story should take place over <span className="font-bold">no more than one day</span>.</li>
-          <li>The story should center on a <span className="font-bold">decision or dilemma</span>.</li>
-        </ul>
-      </div>
-
-      <p className="mb-4 text-sm text-gray-600">Outline your story plan below. Use as many of the boxes as you find necessary. Remember, your goal is to <span className="font-semibold">{meta.group.includes("DIV")?"win the short story competition with your originality":"get the highest grade possible"}</span>! Remember, the story should be <span className="font-semibold">250-350 words.</span></p>
-
-{/* Quick Ideas Section */}
-<div className="mb-6">
-<h2 className="text-xl font-bold mb-3 text-gray-800">Quick Ideas</h2>
-      <textarea
-value={quick_ideas}
-onChange={(e) => set_quick_ideas(e.target.value)}
-onPaste={(e) => e.preventDefault()}
-rows={3}
-        className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
-placeholder="Jot down as many ideas for a story you have."
-/>
-</div>
-
-{/* Outline Section */}
-<div>
-<h2 className="text-xl font-bold mb-4 text-gray-800">Outline</h2>
-<div className="flex flex-col gap-4">
-
-<div>
-<label className="block mb-1 text-sm font-medium text-gray-700">Main Character</label>
-<p className="mb-3 text-sm text-gray-600">Who is your main character? What are their traits?
-Additionally, what is your character's goal in the story? What do they want?</p>
-<textarea
-value={main_char}
-onChange={(e) => set_main_char(e.target.value)}
-onPaste={(e) => e.preventDefault()}
-rows={3}
-className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
-placeholder="Who is your main character?"
-/>
-</div>
-
-<div>
-<label className="block mb-1 text-sm font-medium text-gray-700">Setting</label>
-<p className="mb-3 text-sm text-gray-600">Where does this story take place? When does this story take place? What time period does the
-story occur over (1 year? 1 day? 20 minutes?)</p>
-<textarea
-value={setting}
-onChange={(e) => set_setting(e.target.value)}
-onPaste={(e) => e.preventDefault()}
-rows={3}
-className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
-placeholder="Where and when does the story take place?"
-/>
-</div>
-
-<div>
-<label className="block mb-1 text-sm font-medium text-gray-700">Conflict</label>
-<p className="mb-3 text-sm text-gray-600">What is the main conflict of this story? How does this conflict
-prevent the character from getting what they want? </p>
-<textarea
-value={conflict}
-onChange={(e) => set_conflict(e.target.value)}
-onPaste={(e) => e.preventDefault()}
-rows={3}
-className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
-placeholder="What problem drives the story?"
-/>
-</div>
-
-<div>
-<label className="block mb-1 text-sm font-medium text-gray-700">Resolution</label>
-<p className="mb-3 text-sm text-gray-600">How does the story end? Does the main character achieve their goal? Why or why not? </p>
-<textarea
-value={resolution}
-onChange={(e) => set_resolution(e.target.value)}
-onPaste={(e) => e.preventDefault()}
-rows={3}
-className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
-placeholder="How is the conflict resolved?"
-/>
-</div>
-
-<div>
-<label className="block mb-1 text-sm font-medium text-gray-700">Plot</label>
-<p className="mb-3 text-sm text-gray-600">Now, write out the events of the story. How does the story
-get from beginning to end? What happens? How is the resolution reached?</p>
-<textarea
-value={plot}
-onChange={(e) => set_plot(e.target.value)}
-onPaste={(e) => e.preventDefault()}
-rows={3}
-className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
-placeholder="Summarize the main events or structure."
-/>
-</div>
-
-</div> {/* End Outline section */}
-</div> {/* End Outline wrapper */}
-    </Shell>
-  );
-};
-
 // ---- New View: Prompt ----
 const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta, onNext }) => {
   const isDiv = meta.group.includes("DIV");
-  const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 20);
+  const [timeRemaining, setTimeRemaining] = React.useState(READ_WAIT_SEC);
   const [showAttentionCheck, setShowAttentionCheck] = React.useState(false);
   const [selectedOption, setSelectedOption] = React.useState<string | null>(null);
   const [showWarning, setShowWarning] = React.useState(false);
   const correctAnswer = isDiv ? "originality" : "grade";
 
   React.useEffect(() => {
-    if (!DEV_MODE && timeRemaining > 0) {
+    if (timeRemaining > 0) {
       const timer = setTimeout(() => setTimeRemaining(prev => prev - 1), 1000);
       return () => clearTimeout(timer);
     }
@@ -901,13 +648,37 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
     }
   };
 
+  const sharedIntro = (
+    <>
+      <p className="text-lg mb-4 font-semibold">You work for a company that is preparing to launch a new consumer product.</p>
+      <p className="mb-3">Your task is to write a short blurb for a product pitch. In the next window, you will be given factual information about the product. Here are your requirements:</p>
+      <ul className="list-disc text-left mx-auto mb-4 max-w-2xl space-y-2 pl-6">
+        <li>Write a {MIN_WORDS}-{MAX_WORDS} word product description for a general audience</li>
+        <li>The description must remain consistent with the facts provided</li>
+        <li>You may frame or present the product how you like, including a product name, tagline, or illustrative scenarios where the product will be used.</li>
+      </ul>
+    </>
+  );
+
   const promptText = isDiv
     ? (
       <>
-        <p className="text-lg mb-4 font-semibold">You are participating in a short story competition.</p>
-        <p className="mb-2">There are thousands of submissions, so <span className="font-bold">your goal is to stand out</span> as much as possible. 
-          Find your voice and be as creative as possible! The short story should be 250-350 words.</p>
-        <p className="mt-4 text-red-600">In other words, your <u>bonus</u> will be determined based on <span className="font-bold">originality and uniqueness.</span></p>
+        {sharedIntro}
+        <p className="mb-2">In order to attract customers, you need to think as creatively as possible and find a distinctive way to present the product.</p>
+        <p className="mt-4 text-red-600">Your <u>bonus</u> will be determined based on the <span className="font-bold">originality and uniqueness</span> of your product pitch.</p>
+
+        <div className="my-6 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-left">
+          <h3 className="font-bold text-amber-900 mb-3 text-base text-center">How originality will be assessed</h3>
+          <p className="text-sm text-gray-700 mb-3">
+            Your pitch will be compared with other pitches written for the same product. Originality will be evaluated based on how much your submission stands out from the others, including:
+          </p>
+          <ul className="text-sm text-gray-700 space-y-2 list-disc pl-5">
+            <li><span className="font-semibold">Framing and angle:</span> Does the pitch approach the product from a distinctive perspective?</li>
+            <li><span className="font-semibold">Expression:</span> Does it use distinctive language, voice, or ways of communicating the product?</li>
+            <li><span className="font-semibold">Presentation:</span> Does it organize or introduce the product in a way that differs from typical submissions?</li>
+          </ul>
+        </div>
+
         <table className="w-full my-4 border-collapse">
           <thead>
             <tr>
@@ -916,75 +687,76 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
             </tr>
           </thead>
           <tbody>
-          <tr>
-              <td className="border border-gray-300 p-2">Top 2%</td>
-              <td className="border border-gray-300 p-2">$7.00</td>
+            <tr>
+              <td className="border border-gray-300 p-2">Top 1%</td>
+              <td className="border border-gray-300 p-2">$5.00</td>
             </tr>
             <tr>
-              <td className="border border-gray-300 p-2">Top 2-10%</td>
-              <td className="border border-gray-300 p-2">$4.00</td>
+              <td className="border border-gray-300 p-2">Top 1–10%</td>
+              <td className="border border-gray-300 p-2">$3.00</td>
             </tr>
             <tr>
-              <td className="border border-gray-300 p-2">Top 10-25%</td>
+              <td className="border border-gray-300 p-2">Top 10–25%</td>
               <td className="border border-gray-300 p-2">$2.00</td>
             </tr>
-
+            <tr>
+              <td className="border border-gray-300 p-2">Below Top 25%</td>
+              <td className="border border-gray-300 p-2">None</td>
+            </tr>
           </tbody>
         </table>
-        <div className="my-10"></div>
-        <p className="mb-2 text-gray-500 italic">
-          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After multiple periods of inactivity, we will flag your submission for manual review.
+        <p className="mb-2 text-sm text-gray-600">
+          Your originality ranking will be determined relative to other participants completing the same task.
         </p>
       </>
     )
     : (
       <>
-        <p className="text-lg mb-4 font-semibold">You are starting an Intro to Writing class.</p>
-        <p className="mb-2">Your first assignment is to create a 250-350 word short story. 
-          Your goal is to get an A by submitting a high-quality piece of work.</p>
-        
+        {sharedIntro}
+        <p className="mt-4 text-red-600">Your <u>bonus</u> will be determined based on the <span className="font-bold">technical quality</span> of your product pitch.</p>
+
         <div className="my-6 p-4 bg-blue-50 border-2 border-blue-300 rounded-xl">
-          <h3 className="font-bold text-blue-900 mb-3 text-base">Grading Rubric</h3>
-          <p className="text-sm text-blue-900 mb-3">Your story will be evaluated on two aspects:</p>
-          
+          <h3 className="font-bold text-blue-900 mb-3 text-base">Grading rubric</h3>
+          <p className="text-sm text-blue-900 mb-3">Your pitch will be evaluated independently on two aspects:</p>
+
           <div className="bg-white rounded-lg overflow-hidden mb-3">
             <table className="w-full">
               <tbody>
                 <tr className="border-b border-gray-200">
                   <td className="p-3 font-semibold text-blue-900 bg-gray-50 align-top w-1/3">
-                    1. Organization<br/>
-                    <span className="text-xs font-normal text-gray-600">(Narrative Flow)</span>
+                    1. Information Quality<br/>
+                    <span className="text-xs font-normal text-gray-600">(Accuracy and completeness)</span>
                   </td>
                   <td className="p-3 pl-6">
                     <ul className="text-xs text-gray-700 space-y-2 text-left">
-                      <li><span className="font-semibold">(4 pt) Excellent:</span> Clear beginning, middle, and end with smooth transitions</li>
-                      <li><span className="font-semibold">(3 pt) Competent:</span> Logical flow with minor structural issues</li>
-                      <li><span className="font-semibold">(2 pt) Basic:</span> Some organization but lacks coherence</li>
-                      <li><span className="font-semibold">(1 pt) Does not meet expectations:</span> Disorganized or unclear structure</li>
+                      <li><span className="font-semibold">(4 pt) Excellent:</span> Accurately communicates the important product information with no unsupported or misleading claims.</li>
+                      <li><span className="font-semibold">(3 pt) Competent:</span> Communicates the important information accurately, with only minor omissions or imprecision.</li>
+                      <li><span className="font-semibold">(2 pt) Basic:</span> Communicates some relevant information but omits important details or contains some unclear or unsupported claims.</li>
+                      <li><span className="font-semibold">(1 pt) Does not meet expectations:</span> Important information is missing, inaccurate, or misleading.</li>
+                    </ul>
+                  </td>
+                </tr>
+                <tr className="border-b border-gray-200">
+                  <td className="p-3 font-semibold text-blue-900 bg-gray-50 align-top w-1/3">
+                    2. Communication Quality<br/>
+                    <span className="text-xs font-normal text-gray-600">(Clarity, organization, and professionalism)</span>
+                  </td>
+                  <td className="p-3 pl-6">
+                    <ul className="text-xs text-gray-700 space-y-2 text-left">
+                      <li><span className="font-semibold">(4 pt) Excellent:</span> Exceptionally clear, concise, well-organized, and polished; information is easy for a general audience to understand.</li>
+                      <li><span className="font-semibold">(3 pt) Competent:</span> Clear and professional overall, with minor issues in organization, wording, or readability.</li>
+                      <li><span className="font-semibold">(2 pt) Basic:</span> Generally understandable but contains noticeable problems with clarity, organization, or professionalism.</li>
+                      <li><span className="font-semibold">(1 pt) Does not meet expectations:</span> Difficult to follow, poorly organized, or insufficiently polished.</li>
                     </ul>
                   </td>
                 </tr>
                 <tr>
                   <td className="p-3 font-semibold text-blue-900 bg-gray-50 align-top w-1/3">
-                    2. Technique<br/>
-                    <span className="text-xs font-normal text-gray-600">(Grammar, Spelling, Punctuation)</span>
-                  </td>
-                  <td className="p-3 pl-6">
-                    <ul className="text-xs text-gray-700 space-y-2 text-left">
-                      <li><span className="font-semibold">(4 pt) Excellent:</span> No errors; demonstrates mastery</li>
-                      <li><span className="font-semibold">(3 pt) Competent:</span> Few minor errors that don't impede understanding</li>
-                      <li><span className="font-semibold">(2 pt) Basic:</span> Several errors that occasionally distract</li>
-                      <li><span className="font-semibold">(1 pt) Does not meet expectations:</span> Frequent errors that impede understanding</li>
-                    </ul>
-                  </td>
-                </tr>
-                <tr>
-                  <td className="p-3 font-semibold text-blue-900 bg-gray-50 align-top w-1/3">
-                    Creativity<br/>
+                    Originality<br/>
                   </td>
                   <td className="p-3 pl-6">
                     <p className="text-sm text-blue-900 text-left">
-                      <span className="font-semibold">Note:</span> You are <span className="font-bold">not graded on creativity or your voice</span>. While creativity and uniqueness are often contributors to good pieces of writing, for now we are only asking for a technically well-written story.
+                      <span className="font-semibold">Note:</span> You are <span className="font-bold">not graded on originality or uniqueness</span>. Creative wording or an unusual approach will not increase your score unless it improves the clarity or quality of the product pitch.
                     </p>
                   </td>
                 </tr>
@@ -992,24 +764,23 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
             </table>
           </div>
         </div>
-        
-        <p className="mt-4 text-red-600">Your <u>bonus</u> will be determined based on <span className="font-bold">the grade you receive:</span></p>
+
         <table className="w-full my-4 border-collapse">
           <thead>
             <tr>
-            <th className="border border-gray-300 p-2 bg-gray-100">Point Range</th>
+              <th className="border border-gray-300 p-2 bg-gray-100">Point Range</th>
               <th className="border border-gray-300 p-2 bg-gray-100">Grade</th>
               <th className="border border-gray-300 p-2 bg-gray-100">Bonus</th>
             </tr>
           </thead>
           <tbody>
-          <tr>
+            <tr>
               <td className="border border-gray-300 p-2">8 points</td>
               <td className="border border-gray-300 p-2">A</td>
-              <td className="border border-gray-300 p-2">$2.50</td>
+              <td className="border border-gray-300 p-2">$2.00</td>
             </tr>
             <tr>
-              <td className="border border-gray-300 p-2">6-7 points</td>
+              <td className="border border-gray-300 p-2">6–7 points</td>
               <td className="border border-gray-300 p-2">B</td>
               <td className="border border-gray-300 p-2">$1.00</td>
             </tr>
@@ -1018,14 +789,11 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
               <td className="border border-gray-300 p-2">C or lower</td>
               <td className="border border-gray-300 p-2">None</td>
             </tr>
-
           </tbody>
         </table>
-        <div className="my-10"></div>
-        <p className="mb-2 text-gray-500 italic">
-          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After 30 seconds of inactivity, we will flag your submission for manual review.
+        <p className="mb-2 text-sm text-gray-600">
+          Your grade is determined independently of other participants. There is no limit to the number of participants who can receive each bonus: everyone who meets the relevant quality standard will receive it.
         </p>
-        
       </>
     );
 
@@ -1099,7 +867,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
                 }`}
                 disabled={!selectedOption}
               >
-                Begin Brainstorm
+                Begin Writing
               </button>
             </>
           )}
@@ -1164,9 +932,16 @@ const AIChatPanel: React.FC<{
           {queriesRemaining} {queriesRemaining === 1 ? 'query' : 'queries'} remaining
         </div>
       </div>
+      <div className="mb-3 p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-sm text-indigo-950">
+        <p className="font-semibold mb-1">The AI already knows the task</p>
+        <p>
+          It has been given the product description, product facts, and the {MIN_WORDS}–{MAX_WORDS} word limit.
+          You do <span className="font-semibold">not</span> need to repeat those.
+        </p>
+      </div>
       <div ref={chatContainerRef} className="border rounded-xl p-3 overflow-y-auto space-y-3 max-h-[800px]">
         {messages.length===0 && (
-          <div className="text-sm text-gray-500">Ask the AI for a first draft or to edit.</div>
+          <div className="text-sm text-gray-500">Ask the AI how to frame the pitch, or request a first draft.</div>
         )}
         {messages.map((m, i)=> (
           <div key={i} className={"p-2 rounded-lg " + (m.role==="assistant"?"bg-gray-100":"bg-gray-50 border")}> 
@@ -1191,7 +966,7 @@ const AIChatPanel: React.FC<{
           <div className="p-3 rounded-lg bg-red-50 border border-red-200">
             <div className="text-sm font-semibold text-red-800 mb-1">Query Limit Reached</div>
             <div className="text-sm text-red-700">
-              You've used all {maxQueries} AI queries for this session. You can continue writing and editing your story in the main editor.
+              You've used all {maxQueries} AI queries for this session. You can continue writing and editing your product pitch in the main editor.
             </div>
           </div>
         )}
@@ -1221,7 +996,7 @@ const AIChatPanel: React.FC<{
       <div className="mt-3 flex gap-2">
         <textarea
           className="flex-1 border rounded-xl p-2 resize-y min-h-[60px] max-h-[300px]"
-          placeholder={isLimitReached ? "Query limit reached" : "Type a message… (press Enter for new line)"}
+          placeholder={isLimitReached ? "Query limit reached" : "How should the pitch be framed? (audience, angle, tone, tagline…)"}
           value={draft}
           onChange={(e)=>setDraft(e.target.value)}
           rows={3}
@@ -1245,16 +1020,9 @@ const AIChatPanel: React.FC<{
       <details className="mt-3 p-3 bg-gray-50 rounded-lg text-xs text-gray-700">
         <summary className="font-semibold cursor-pointer hover:text-gray-900">💡 Tips for prompting the AI (click to expand)</summary>
         <ul className="mt-2 space-y-2 text-gray-600">
-          <li className="ml-4">
-            <div>"In 250-350 words, write a short story with the following elements:</div>
-            <div className="ml-4 mt-1 space-y-1">
-              <div>- Setting: [your setting]</div>
-              <div>- Main character: [your main character]</div>
-              <div>- Conflict: [your conflict]</div>
-            </div>
-            <div className="mt-1">Make sure to write in first person and unfold the story over a single day."</div>
-          </li>
-          <li className="ml-4">"Rewrite this paragraph in a more [dramatic/humorous/suspenseful] tone: [paragraph]"</li>
+          <li className="ml-4">"Write a first draft using this angle: [your framing, name, or tagline]."</li>
+          <li className="ml-4">"Rewrite this section in a more [dramatic/humorous/suspenseful] tone: [section content]"</li>
+          <li className="ml-4">"Brainstorm unique ways I can frame the product pitch."</li>
         </ul>
       </details>
     </div>
@@ -1264,10 +1032,9 @@ const AIChatPanel: React.FC<{
 // ---- View 3: Editor ----
 const EditorView: React.FC<{
   meta: SessionMeta;
-  brainstorm: string;
   onNext: (finalText: string, aiTranscript: {role:"user"|"assistant"; content:string}[])=>void;
   sessionId?: string | null;
-}> = ({ meta, brainstorm, onNext, sessionId }) => {
+}> = ({ meta, onNext, sessionId }) => {
   const [text, setText] = useState("");
   const [aiMessages, setAiMessages] = useState<{role:"user"|"assistant"; content:string}[]>([]);
   const [chatDraft, setChatDraft] = useState(""); // Lift chat input state
@@ -1275,19 +1042,20 @@ const EditorView: React.FC<{
   const [aiQueryCount, setAiQueryCount] = useState(0); // Track number of AI queries sent
   const MAX_AI_QUERIES = 15; // Maximum number of AI queries allowed per session
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
-  const TOTAL_TIME = DEV_MODE ? 30 : 20 * 60; // DEV: 1 minute, PROD: 20 minutes
-  const MIN_TIME_REQUIRED = DEV_MODE ? 15 : 5 * 60; // DEV: 15 seconds, PROD: 5 minutes (25% of total time)
+  const TOTAL_TIME = TOTAL_TIME_SEC;
+  const MIN_TIME_REQUIRED = MIN_TIME_REQUIRED_SEC;
+  const isAI = meta.group.startsWith("AI");
+  const isDiv = meta.group.includes("DIV");
   const [timeRemaining, setTimeRemaining] = useState(TOTAL_TIME);
-  const [showReminder, setShowReminder] = useState<false | '5min' | '1min'>(false);
+  const [showReminder, setShowReminder] = useState<false | number>(false);
   const [wordCount, setWordCount] = useState(0);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [hasUsedAI, setHasUsedAI] = useState(false); // Track if user has interacted with AI
   const [showEditorEnabledMessage, setShowEditorEnabledMessage] = useState(false); // Show the enabled message
-  const [showBrainstormOutline, setShowBrainstormOutline] = useState(true); // Control brainstorm visibility
   const [showTimeExpiredWarning, setShowTimeExpiredWarning] = useState(false); // Show warning when time is up but word count invalid
-  const [showWordCountWarning, setShowWordCountWarning] = useState<false | '10min' | '5min' | '2min'>(false); // Word count warnings at intervals
+  const [showWordCountWarning, setShowWordCountWarning] = useState<false | number>(false); // remaining seconds when shown
   const timeoutHandledRef = useRef(false); // Track if we've already handled timer expiration
-  const [graceTimeRemaining, setGraceTimeRemaining] = useState<number | null>(null); // Grace period timer (3 minutes)
+  const [graceTimeRemaining, setGraceTimeRemaining] = useState<number | null>(null);
   const graceTimeoutHandledRef = useRef(false); // Track if we've handled grace period expiration
   
   // Update word count whenever text changes
@@ -1296,7 +1064,7 @@ const EditorView: React.FC<{
     setWordCount(words.length);
     
     // Clear regular word count warnings (but not grace period)
-    const isValidWordCount = words.length >= 250 && words.length <= 385;
+    const isValidWordCount = words.length >= MIN_WORDS && words.length <= GRACE_MAX_WORDS;
     if (isValidWordCount) {
       if (showWordCountWarning) {
         setShowWordCountWarning(false);
@@ -1311,28 +1079,17 @@ const EditorView: React.FC<{
         setTimeRemaining(prev => {
           const newTime = prev - 1;
           
-          // Show reminders at 5:00 and 1:00
-          if (newTime === 300) {
-            setShowReminder('5min');
-            setTimeout(() => setShowReminder(false), 10000);
-          } else if (newTime === 60) {
-            setShowReminder('1min');
+          // Show wrap-up reminders at configured remaining times
+          if ((REMINDER_AT_SEC as readonly number[]).includes(newTime)) {
+            setShowReminder(newTime);
             setTimeout(() => setShowReminder(false), 10000);
           }
           
-          // Show word count warnings at 10:00, 5:00, and 2:00 if word count is invalid
-          const isWordCountInvalid = wordCount < 250 || wordCount > 350;
-          if (isWordCountInvalid) {
-            if (newTime === 600) { // 10 minutes
-              setShowWordCountWarning('10min');
-              setTimeout(() => setShowWordCountWarning(false), 30000); // Show for 30 seconds
-            } else if (newTime === 300) { // 5 minutes
-              setShowWordCountWarning('5min');
-              setTimeout(() => setShowWordCountWarning(false), 30000);
-            } else if (newTime === 120) { // 2 minutes
-              setShowWordCountWarning('2min');
-              setTimeout(() => setShowWordCountWarning(false), 30000);
-            }
+          // Warn if word count is still invalid at configured remaining times
+          const isWordCountInvalid = wordCount < MIN_WORDS || wordCount > MAX_WORDS;
+          if (isWordCountInvalid && (WORD_COUNT_WARN_AT_SEC as readonly number[]).includes(newTime)) {
+            setShowWordCountWarning(newTime);
+            setTimeout(() => setShowWordCountWarning(false), 30000);
           }
           
           return newTime;
@@ -1347,13 +1104,13 @@ const EditorView: React.FC<{
     if (timeRemaining === 0 && !timeoutHandledRef.current) {
       timeoutHandledRef.current = true; // Mark as handled
       
-      // Only force proceed if word count is valid (at least 250 words, allow slightly over 350)
-      if (wordCount >= 250 && wordCount <= 385) {
+      // Only force proceed if word count is valid
+      if (wordCount >= MIN_WORDS && wordCount <= GRACE_MAX_WORDS) {
         onNext(text, aiMessages);
     } else {
         // If word count is invalid, show warning and start grace period
         setShowTimeExpiredWarning(true);
-        setGraceTimeRemaining(DEV_MODE ? 30 : 3 * 60); // DEV: 30 seconds, PROD: 3 minutes grace period
+        setGraceTimeRemaining(GRACE_PERIOD_SEC);
       }
     }
   }, [timeRemaining, wordCount, text, aiMessages, onNext]);
@@ -1384,8 +1141,6 @@ const EditorView: React.FC<{
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const isAI = meta.group.startsWith("AI");
-
   // Refs to access current values without triggering re-renders
   const textRef = useRef(text);
   const chatDraftRef = useRef(chatDraft);
@@ -1403,7 +1158,6 @@ const EditorView: React.FC<{
   useEffect(() => {
     if (!sessionId) return;
     
-    const SNAPSHOT_INTERVAL = 5000; // 5 seconds
     const lastSavedRef = { mainText: '', chatText: '' };
     
     const snapshotTimer = setInterval(() => {
@@ -1421,7 +1175,7 @@ const EditorView: React.FC<{
         saveSnapshot(sessionId, 'writing', 'chat', currentChatText);
         lastSavedRef.chatText = currentChatText;
       }
-    }, SNAPSHOT_INTERVAL);
+    }, SNAPSHOT_INTERVAL_MS);
     
     // Save final snapshots on unmount
     return () => {
@@ -1489,17 +1243,35 @@ const EditorView: React.FC<{
           'Authorization': `Bearer ${OPENAI_API_KEY}`
         },
         body: JSON.stringify({
-          model: 'gpt-5-mini',
+          model: OPENAI_MODEL,
           messages: [
             {
               role: 'system',
               content: `Role and Objective:
-- Serve as a helpful assistant guiding the user to write a short story.
+- Serve as a helpful assistant helping the user write a short product pitch.
+
+The AI already has the following context. Do not ask the user to repeat it.
+
+Product:
+- Portable mini projector
+- Product description: a compact consumer projector designed for everyday use
+
+Product facts / features (do not invent new features, prices, or performance claims):
+- Handheld/portable
+- 3-hour battery
+- Connects to phone/laptop
+- Built-in speaker
+- Projects up to 100 inches
+
+Constraints:
+- The pitch must be ${MIN_WORDS}-${MAX_WORDS} words
+- Stay consistent with the facts above
+- The user may add a product name, tagline, or illustrative usage scenario, but must not invent new features, prices, or performance claims
 
 Instructions:
-- Follow the user's requests: it could be to write a first draft, to make edits, or other requests.
-- The story must be composed from a first-person point of view.
-- The story should unfold within a single day (no more than 24 hours).
+- Follow the user's requests: first draft, edits, alternative framings, tone changes, etc.
+- The user will mainly provide guidance on how to frame the pitch (audience, angle, voice, tagline, scenario). Use that guidance together with the product facts above.
+- Keep the output within ${MIN_WORDS}-${MAX_WORDS} words unless the user is only asking for ideas or feedback.
 
 Verbosity and Reasoning Effort:
 - Keep guidance and explanations brief. Set reasoning_effort = low.`
@@ -1535,29 +1307,29 @@ Verbosity and Reasoning Effort:
   const EditorBox = (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between mb-2">
-        <div className="font-semibold">Write Your Story</div>
+        <div className="font-semibold">Write Your Product Pitch</div>
         <div className="flex items-center gap-4">
           <div className={`text-sm ${
-            wordCount < 250 || wordCount > 350 
+            wordCount < MIN_WORDS || wordCount > MAX_WORDS 
               ? 'text-red-600 font-semibold' 
               : 'text-green-600 font-semibold'
           }`}>
             {wordCount} words
           </div>
-          <div className="text-xs text-gray-500">Required length: 250-350 words</div>
+          <div className="text-xs text-gray-500">Required length: {MIN_WORDS}-{MAX_WORDS} words</div>
         </div>
       </div>
       {isAI && !hasUsedAI && !DEV_MODE && (
         <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
           <p className="text-blue-900 font-semibold mb-1">📝 Please start with the AI Assistant</p>
-          <p className="text-blue-800">Use the AI panel on the right to generate a first draft or story components before editing here.</p>
+          <p className="text-blue-800">Use the AI panel on the right to generate a first draft or pitch components before editing here.</p>
         </div>
       )}
       {isAI && hasUsedAI && showEditorEnabledMessage && (
         <div className="mb-3 p-3 bg-green-50 border border-green-200 rounded-lg text-sm">
           <p className="text-green-900 font-semibold mb-1">✅ Main editor now enabled</p>
           <p className="text-green-800">
-            You can now edit, revise, or write your own story. Remember:
+            You can now edit, revise, or write your own product pitch. Remember:
             <br/>• You're <span className="font-semibold">not required</span> to use the AI-generated content
             <br/>• You can continue using the AI to edit, refine, or create new drafts with different tones
           </p>
@@ -1575,7 +1347,7 @@ Verbosity and Reasoning Effort:
         }}
         rows={18}
         className="w-full border rounded-xl p-3 focus:outline-none focus:ring h-full"
-        placeholder={isAI && !hasUsedAI && !DEV_MODE ? "Please use the AI Assistant first..." : "Write here... (250-350 words)"}
+        placeholder={isAI && !hasUsedAI && !DEV_MODE ? "Please use the AI Assistant first..." : `Write here... (${MIN_WORDS}-${MAX_WORDS} words)`}
         spellCheck="true"
         disabled={isAI && !hasUsedAI && !DEV_MODE}
         style={isAI && !hasUsedAI && !DEV_MODE ? { backgroundColor: '#f9fafb', cursor: 'not-allowed' } : {}}
@@ -1593,13 +1365,13 @@ Verbosity and Reasoning Effort:
         <div className="flex flex-col items-center gap-4">
           {showConfirmation ? (
             <div className="flex flex-col items-center gap-3">
-              <p className="text-sm text-gray-600">Are you sure you want to submit your story?</p>
+              <p className="text-sm text-gray-600">Are you sure you want to submit your product pitch?</p>
               <div className="flex gap-3">
                 <button 
                   onClick={() => onNext(text, aiMessages)} 
                   className="px-4 py-2 rounded-xl bg-black text-white"
                 >
-                  Yes, submit story
+                  Yes, submit pitch
                 </button>
                 <button 
                   onClick={() => setShowConfirmation(false)} 
@@ -1611,50 +1383,50 @@ Verbosity and Reasoning Effort:
             </div>
           ) : (
             <>
-              {/* Show validation messages only if not in grace period or if word count is still < 250 */}
-              {!graceTimeRemaining && (timeRemaining > MIN_TIME_REQUIRED || wordCount < 250 || wordCount > 350) && (
+              {/* Show validation messages only if not in grace period or if word count is still too short */}
+              {!graceTimeRemaining && ((TOTAL_TIME - timeRemaining) < MIN_TIME_REQUIRED || wordCount < MIN_WORDS || wordCount > MAX_WORDS) && (
                 <div className="text-sm text-gray-600 text-center">
-                  {timeRemaining > MIN_TIME_REQUIRED && (
-                    <div>Please spend at least {DEV_MODE ? '15 seconds' : '5 minutes'} writing ({TOTAL_TIME - timeRemaining} / {MIN_TIME_REQUIRED} seconds)</div>
+                  {(TOTAL_TIME - timeRemaining) < MIN_TIME_REQUIRED && (
+                    <div>Please spend at least {formatDuration(MIN_TIME_REQUIRED)} writing ({TOTAL_TIME - timeRemaining} / {MIN_TIME_REQUIRED} seconds)</div>
                   )}
-                  {wordCount < 250 && (
-                    <div>Required: 250-350 words (currently {wordCount} words)</div>
+                  {wordCount < MIN_WORDS && (
+                    <div>Required: {MIN_WORDS}-{MAX_WORDS} words (currently {wordCount} words)</div>
                   )}
-                  {wordCount > 350 && (
-                    <div>Please reduce to 350 words or less (currently {wordCount} words)</div>
+                  {wordCount > MAX_WORDS && (
+                    <div>Please reduce to {MAX_WORDS} words or less (currently {wordCount} words)</div>
                   )}
                 </div>
               )}
-              {graceTimeRemaining && wordCount < 250 && (
+              {graceTimeRemaining && wordCount < MIN_WORDS && (
                 <div className="text-sm text-red-600 text-center font-semibold">
-                  ⚠️ Need at least {250 - wordCount} more words to submit now
+                  ⚠️ Need at least {MIN_WORDS - wordCount} more words to submit now
                 </div>
               )}
             <button
               onClick={() => setShowConfirmation(true)}
               disabled={
-                (timeRemaining > MIN_TIME_REQUIRED) || 
-                (wordCount < 250) || 
-                (graceTimeRemaining && wordCount > 385) ||
-                (!graceTimeRemaining && wordCount > 350)
+                ((TOTAL_TIME - timeRemaining) < MIN_TIME_REQUIRED) || 
+                (wordCount < MIN_WORDS) || 
+                (graceTimeRemaining && wordCount > GRACE_MAX_WORDS) ||
+                (!graceTimeRemaining && wordCount > MAX_WORDS)
               }
               className={`px-4 py-2 rounded-xl ${
-                (timeRemaining > MIN_TIME_REQUIRED) || 
-                (wordCount < 250) || 
-                (graceTimeRemaining && wordCount > 385) ||
-                (!graceTimeRemaining && wordCount > 350)
+                ((TOTAL_TIME - timeRemaining) < MIN_TIME_REQUIRED) || 
+                (wordCount < MIN_WORDS) || 
+                (graceTimeRemaining && wordCount > GRACE_MAX_WORDS) ||
+                (!graceTimeRemaining && wordCount > MAX_WORDS)
                   ? 'bg-gray-300 cursor-not-allowed'
                   : 'bg-black text-white'
               }`}
               title={
-                timeRemaining > MIN_TIME_REQUIRED
-                  ? `Please wait ${timeRemaining - MIN_TIME_REQUIRED} more seconds`
-                  : wordCount < 250 
-                    ? `Need ${250 - wordCount} more words` 
-                    : (graceTimeRemaining && wordCount > 385)
-                      ? `Story is too long (${wordCount} words). Grace period allows up to 385 words.`
-                    : (!graceTimeRemaining && wordCount > 350)
-                      ? `Reduce to 350 words or less` 
+                (TOTAL_TIME - timeRemaining) < MIN_TIME_REQUIRED
+                  ? `Please wait ${MIN_TIME_REQUIRED - (TOTAL_TIME - timeRemaining)} more seconds`
+                  : wordCount < MIN_WORDS 
+                    ? `Need ${MIN_WORDS - wordCount} more words` 
+                    : (graceTimeRemaining && wordCount > GRACE_MAX_WORDS)
+                      ? `Pitch is too long (${wordCount} words). Grace period allows up to ${GRACE_MAX_WORDS} words.`
+                    : (!graceTimeRemaining && wordCount > MAX_WORDS)
+                      ? `Reduce to ${MAX_WORDS} words or less` 
                     : ''
               }
             >
@@ -1670,45 +1442,45 @@ Verbosity and Reasoning Effort:
         {/* Grace Period Warning - Highest priority */}
         {showTimeExpiredWarning && graceTimeRemaining !== null && graceTimeRemaining > 0 && (
           <div className={`p-4 border-2 rounded-xl shadow-2xl ${
-            wordCount >= 250 && wordCount <= 385 
+            wordCount >= MIN_WORDS && wordCount <= GRACE_MAX_WORDS 
               ? 'bg-green-100 border-green-500 text-green-900'
               : 'bg-orange-100 border-orange-500 text-orange-900'
           }`}>
             <div className="text-lg font-bold mb-2">
-              {wordCount >= 250 && wordCount <= 385 ? (
+              {wordCount >= MIN_WORDS && wordCount <= GRACE_MAX_WORDS ? (
                 <>✅ Ready to Submit!</>
               ) : (
                 <>⏰ Time&apos;s Up! Grace Period</>
               )}
             </div>
             <div className="mb-2 text-sm">
-              {wordCount >= 250 && wordCount <= 385 ? (
+              {wordCount >= MIN_WORDS && wordCount <= GRACE_MAX_WORDS ? (
                 <span className="text-green-800">Word count is valid. You can submit!</span>
               ) : (
-                <span>Story must be <span className="font-bold">250-385 words</span>.</span>
+                <span>Pitch must be <span className="font-bold">{MIN_WORDS}-{GRACE_MAX_WORDS} words</span>.</span>
               )}
             </div>
             <div className="mb-2 text-sm">
-              {wordCount < 250 && (
-                <span className="text-red-700 font-bold">⚠️ Need {250 - wordCount} more words!</span>
+              {wordCount < MIN_WORDS && (
+                <span className="text-red-700 font-bold">⚠️ Need {MIN_WORDS - wordCount} more words!</span>
               )}
-              {wordCount >= 250 && wordCount <= 385 && (
+              {wordCount >= MIN_WORDS && wordCount <= GRACE_MAX_WORDS && (
                 <span className="text-green-700 font-bold">✓ {wordCount} words</span>
               )}
-              {wordCount > 385 && (
-                <span className="text-orange-700 font-bold">Remove {wordCount - 385} words</span>
+              {wordCount > GRACE_MAX_WORDS && (
+                <span className="text-orange-700 font-bold">Remove {wordCount - GRACE_MAX_WORDS} words</span>
               )}
             </div>
             <div className={`font-bold text-base ${
-              wordCount >= 250 && wordCount <= 385 ? 'text-green-700' : 'text-red-700'
+              wordCount >= MIN_WORDS && wordCount <= GRACE_MAX_WORDS ? 'text-green-700' : 'text-red-700'
             }`}>
               ⏱️ Grace: {formatTime(graceTimeRemaining!)}
             </div>
             <div className="text-xs mt-1">
-              {wordCount >= 250 && wordCount <= 385 ? (
+              {wordCount >= MIN_WORDS && wordCount <= GRACE_MAX_WORDS ? (
                 <span className="text-green-800">Submit anytime.</span>
               ) : (
-                <span className={wordCount >= 250 && wordCount <= 385 ? 'text-green-800' : 'text-orange-800'}>
+                <span className={wordCount >= MIN_WORDS && wordCount <= GRACE_MAX_WORDS ? 'text-green-800' : 'text-orange-800'}>
                   Auto-submit when timer expires.
                 </span>
               )}
@@ -1722,18 +1494,18 @@ Verbosity and Reasoning Effort:
             <div className="text-lg font-bold mb-2 flex items-center gap-2">
               <span className="text-xl">⚠️</span>
               <span>
-                {showWordCountWarning === '10min' && '10 min left!'}
-                {showWordCountWarning === '5min' && '5 min left!'}
-                {showWordCountWarning === '2min' && '2 min left!'}
+                {typeof showWordCountWarning === "number"
+                  ? `${formatDuration(showWordCountWarning)} left!`
+                  : "Time running out!"}
               </span>
             </div>
             <div className="text-sm mb-2">
-              Story MUST be <span className="font-bold">250-350 words</span>!
+              Pitch MUST be <span className="font-bold">{MIN_WORDS}-{MAX_WORDS} words</span>!
             </div>
             <div className="text-sm font-semibold">
               Current: <span className="text-base">{wordCount} words</span>
-              {wordCount < 250 && <span className="text-red-700"> (Need {250 - wordCount} more)</span>}
-              {wordCount > 350 && <span className="text-red-700"> (Remove {wordCount - 350})</span>}
+              {wordCount < MIN_WORDS && <span className="text-red-700"> (Need {MIN_WORDS - wordCount} more)</span>}
+              {wordCount > MAX_WORDS && <span className="text-red-700"> (Remove {wordCount - MAX_WORDS})</span>}
             </div>
           </div>
         )}
@@ -1741,9 +1513,9 @@ Verbosity and Reasoning Effort:
         {/* Timer */}
         <div 
           className={`px-4 py-2 rounded-lg font-bold text-base shadow-lg ${
-            timeRemaining <= 60 
+            timeRemaining <= TIMER_WARN_RED_SEC 
               ? 'bg-red-100 text-red-700 border-2 border-red-500' 
-              : timeRemaining <= 300 
+              : timeRemaining <= TIMER_WARN_YELLOW_SEC 
                 ? 'bg-yellow-100 text-yellow-700 border-2 border-yellow-500'
                 : 'bg-blue-100 text-blue-700 border-2 border-blue-500'
           }`}
@@ -1754,25 +1526,47 @@ Verbosity and Reasoning Effort:
         {/* Time reminder below timer */}
         {showReminder && !showTimeExpiredWarning && (
           <div className="px-4 py-2 rounded-lg text-sm font-semibold shadow-lg bg-yellow-100 border-2 border-yellow-400 text-yellow-700 animate-pulse">
-            {showReminder === '5min' 
-              ? "⏰ 5 min left! Wrap up."
-              : "⚠️ 1 min left! Finish!"}
+            {typeof showReminder === "number" && showReminder <= TIMER_WARN_RED_SEC
+              ? `⚠️ ${formatDuration(showReminder)} left! Finish!`
+              : `⏰ ${typeof showReminder === "number" ? formatDuration(showReminder) : ""} left! Wrap up.`}
           </div>
         )}
       </div>
-      {/* Story Guidelines (when grace period not active) */}
-      {!showTimeExpiredWarning && (
-        <>
-          {/* Story Guidelines Box */}
+      {/* Product info and task reminders */}
           <div className="mb-6 p-4 bg-blue-50 border-2 border-blue-300 rounded-xl">
-            <h3 className="font-bold text-blue-900 mb-2 text-base">📖 Story Guidelines</h3>
-            <p className="text-sm text-blue-900 mb-2">
-              To help spark ideas and make your story easier to shape, we've added a few gentle guidelines to focus your creativity:
-            </p>
-            <ul className="list-disc pl-5 space-y-1 text-sm text-blue-800">
-              <li>Write the story from a <span className="font-bold">first-person</span> point of view.</li>
-              <li>The story should take place over <span className="font-bold">no more than one day</span>.</li>
-              <li>The story should center on a <span className="font-bold">decision or dilemma</span>.</li>
+            <h3 className="font-bold text-blue-900 mb-3 text-base">Product information</h3>
+            <div className="flex flex-col sm:flex-row gap-4 items-start">
+              <img
+                src={miniProjectorImg}
+                alt="Portable mini projector"
+                className="w-full sm:w-48 h-auto rounded-lg border border-blue-200 bg-white object-contain"
+              />
+              <div>
+                <p className="font-semibold text-blue-900 mb-2">Portable mini projector</p>
+                <p className="text-sm text-blue-900 mb-1">Product features:</p>
+                <ul className="list-disc pl-5 space-y-1 text-sm text-blue-800">
+                  <li>Handheld/portable</li>
+                  <li>3-hour battery</li>
+                  <li>Connects to phone/laptop</li>
+                  <li>Built-in speaker</li>
+                  <li>Projects up to 100 inches</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div className="mb-6 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl">
+            <h3 className="font-bold text-amber-900 mb-2 text-base">Your task</h3>
+            <ul className="list-disc pl-5 space-y-1 text-sm text-amber-900">
+              <li>Write a <span className="font-bold">{MIN_WORDS}–{MAX_WORDS} word</span> blurb about the product.</li>
+              <li>You have up to <span className="font-bold">{formatDuration(TOTAL_TIME)}</span>.</li>
+              <li>
+                Your bonus is determined entirely based on{" "}
+                {isDiv
+                  ? <span className="font-bold">the originality and uniqueness of your product pitch</span>
+                  : <span className="font-bold">the technical quality of your product pitch, NOT originality or creativity</span>
+                }.
+              </li>
             </ul>
           </div>
 
@@ -1797,8 +1591,6 @@ Verbosity and Reasoning Effort:
               <hr className="mb-6 border-t-2 border-gray-300" />
             </>
           )}
-        </>
-      )}
 
       {isAI ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 min-h-[520px]">
@@ -1818,60 +1610,6 @@ Verbosity and Reasoning Effort:
       ) : (
         <div className="min-h-[520px]">{EditorBox}</div>
       )}
-      {/* Brainstorm Outline - Visible by default with collapse option */}
-      <div className="mt-6 border-t pt-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold">Your Brainstorm Outline</h3>
-          <button
-            onClick={() => setShowBrainstormOutline(!showBrainstormOutline)}
-            className="text-sm px-3 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700"
-          >
-            {showBrainstormOutline ? '▼ Hide' : '▶ Show'}
-          </button>
-        </div>
-        {showBrainstormOutline && (() => {
-          try {
-            const brainstormData = JSON.parse(brainstorm || '{}');
-            return (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                {brainstormData.main_char && (
-                  <div className="p-3 bg-blue-50 rounded-lg">
-                    <div className="font-semibold text-blue-900 mb-1">Main Character</div>
-                    <div className="text-gray-700 whitespace-pre-wrap">{brainstormData.main_char}</div>
-                  </div>
-                )}
-                {brainstormData.setting && (
-                  <div className="p-3 bg-green-50 rounded-lg">
-                    <div className="font-semibold text-green-900 mb-1">Setting</div>
-                    <div className="text-gray-700 whitespace-pre-wrap">{brainstormData.setting}</div>
-                  </div>
-                )}
-                {brainstormData.conflict && (
-                  <div className="p-3 bg-orange-50 rounded-lg">
-                    <div className="font-semibold text-orange-900 mb-1">Conflict</div>
-                    <div className="text-gray-700 whitespace-pre-wrap">{brainstormData.conflict}</div>
-                  </div>
-                )}
-                {brainstormData.resolution && (
-                  <div className="p-3 bg-purple-50 rounded-lg">
-                    <div className="font-semibold text-purple-900 mb-1">Resolution</div>
-                    <div className="text-gray-700 whitespace-pre-wrap">{brainstormData.resolution}</div>
-                  </div>
-                )}
-                {brainstormData.plot && (
-                  <div className="p-3 bg-gray-50 rounded-lg md:col-span-2">
-                    <div className="font-semibold text-gray-900 mb-1">Plot</div>
-                    <div className="text-gray-700 whitespace-pre-wrap">{brainstormData.plot}</div>
-                  </div>
-                )}
-              </div>
-            );
-          } catch {
-            // Fallback for old format (plain text)
-            return <pre className="mt-2 bg-gray-50 p-3 rounded-lg whitespace-pre-wrap text-sm">{brainstorm || "(no brainstorm)"}</pre>;
-          }
-        })()}
-      </div>
     </Shell>
   );
 };
@@ -1880,29 +1618,30 @@ Verbosity and Reasoning Effort:
 const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }>=({ meta, onSubmit })=>{
   const [q1, setQ1] = useState("");
   const [q2, setQ2] = useState("");
-  const [q3Items, setQ3Items] = useState<string[]>(["", ""]); // Start with 2 empty items
-  const [q4, setQ4] = useState(""); // AI strategy question (only for AI groups)
+  const [q3, setQ3] = useState("");
+  const [q4Items, setQ4Items] = useState<string[]>(["", ""]); // Start with 2 empty items
+  const [q5, setQ5] = useState(""); // AI strategy question (only for AI groups)
+  const [q6, setQ6] = useState(""); // Open-ended UI / pilot feedback
   
-  const addQ3Item = () => {
-    setQ3Items([...q3Items, ""]);
+  const addQ4Item = () => {
+    setQ4Items([...q4Items, ""]);
   };
   
-  const removeQ3Item = (index: number) => {
-    if (q3Items.length > 1) { // Keep at least 1 item
-      setQ3Items(q3Items.filter((_, i) => i !== index));
+  const removeQ4Item = (index: number) => {
+    if (q4Items.length > 1) { // Keep at least 1 item
+      setQ4Items(q4Items.filter((_, i) => i !== index));
     }
   };
   
-  const updateQ3Item = (index: number, value: string) => {
-    const newItems = [...q3Items];
+  const updateQ4Item = (index: number, value: string) => {
+    const newItems = [...q4Items];
     newItems[index] = value;
-    setQ3Items(newItems);
+    setQ4Items(newItems);
   };
 
-  // Check if at least one q3 item is filled
-  const hasQ3Response = q3Items.some(item => item.trim().length > 0);
+  const hasQ4Response = q4Items.some(item => item.trim().length > 0);
   const isAIGroup = meta.group.startsWith("AI");
-  const canSubmit = q1 && q2 && hasQ3Response && (!isAIGroup || q4.trim().length > 0);
+  const canSubmit = q1 && q2 && q3 && hasQ4Response && q6.trim().length > 0 && (!isAIGroup || q5.trim().length > 0);
 
   return (
     <Shell
@@ -1920,7 +1659,7 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
                 ? 'bg-black text-white' 
                 : 'bg-gray-300 text-gray-600 cursor-not-allowed'
             }`}
-            onClick={()=> onSubmit({ q1, q2, q3: q3Items, q4: isAIGroup ? q4 : null })}
+            onClick={()=> onSubmit({ q1, q2, q3, q4: q4Items, q5: isAIGroup ? q5 : null, q6 })}
             disabled={!canSubmit}
           >
           Submit & Finish
@@ -1931,23 +1670,34 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
       <div className="space-y-4">
         <div className="text-sm text-gray-600">Thank you! A few quick questions:</div>
         <label className="block">
-          <div className="mb-1 font-medium">How familiar are you with using AI for general tasks? (i.e., what is your level of expertise in using AI?)</div>
+          <div className="mb-1 font-medium">To what degree do you feel personally responsible for the product pitch you produced in this study?</div>
           <select className="w-full border rounded-xl p-2" value={q1} onChange={(e)=>setQ1(e.target.value)}>
+            <option value="">Select…</option>
+            <option>0% (Not at all responsible)</option>
+            <option>25% (Slightly responsible)</option>
+            <option>50% (Moderately responsible)</option>
+            <option>75% (Very responsible)</option>
+            <option>100% (Fully responsible)</option>
+          </select>
+        </label>
+        <label className="block">
+          <div className="mb-1 font-medium">How familiar are you with using AI for general tasks? (i.e., what is your level of expertise in using AI?)</div>
+          <select className="w-full border rounded-xl p-2" value={q2} onChange={(e)=>setQ2(e.target.value)}>
             <option value="">Select…</option>
             <option>Not at all familiar</option>
             <option>Slightly familiar</option>
-            <option>Somewhat familiar</option>
+            <option>Moderately familiar</option>
             <option>Very familiar</option>
             <option>Extremely familiar</option>
           </select>
         </label>
         <label className="block">
           <div className="mb-1 font-medium">How familiar are you with using <span className="font-semibold">AI for writing (creative or otherwise)</span>?</div>
-          <select className="w-full border rounded-xl p-2" value={q2} onChange={(e)=>setQ2(e.target.value)}>
+          <select className="w-full border rounded-xl p-2" value={q3} onChange={(e)=>setQ3(e.target.value)}>
             <option value="">Select…</option>
             <option>Not at all familiar</option>
             <option>Slightly familiar</option>
-            <option>Somewhat familiar</option>
+            <option>Moderately familiar</option>
             <option>Very familiar</option>
             <option>Extremely familiar</option>
           </select>
@@ -1956,20 +1706,20 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
           <div className="mb-2 font-medium">What aspects would you look out for to determine if a piece of writing is AI-generated?</div>
           <div className="text-xs text-gray-500 mb-2">Add one aspect per line. You can add or remove lines as needed. Please add at least one aspect.</div>
           <div className="space-y-2">
-            {q3Items.map((item, index) => (
+            {q4Items.map((item, index) => (
               <div key={index} className="flex gap-2 items-center">
                 <input
                   type="text"
                   className="flex-1 border rounded-lg p-2 text-sm"
                   placeholder={`Aspect ${index + 1}`}
                   value={item}
-                  onChange={(e) => updateQ3Item(index, e.target.value)}
+                  onChange={(e) => updateQ4Item(index, e.target.value)}
                 />
                 <button
-                  onClick={() => removeQ3Item(index)}
-                  disabled={q3Items.length === 1}
+                  onClick={() => removeQ4Item(index)}
+                  disabled={q4Items.length === 1}
                   className={`px-3 py-2 rounded-lg text-sm ${
-                    q3Items.length === 1
+                    q4Items.length === 1
                       ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
                       : 'bg-red-100 text-red-600 hover:bg-red-200'
                   }`}
@@ -1980,7 +1730,7 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
               </div>
             ))}
             <button
-              onClick={addQ3Item}
+              onClick={addQ4Item}
               className="px-3 py-2 rounded-lg text-sm bg-blue-100 text-blue-600 hover:bg-blue-200"
             >
               + Add another aspect
@@ -1995,11 +1745,23 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
             <textarea
               className="w-full border rounded-xl p-2 min-h-[100px]"
               placeholder="Describe your approach to using the AI assistant..."
-              value={q4}
-              onChange={(e) => setQ4(e.target.value)}
+              value={q5}
+              onChange={(e) => setQ5(e.target.value)}
             />
         </label>
         )}
+
+        <label className="block">
+          <div className="mb-1 font-medium">
+            This was a pilot study to study how people write (with or without AI). Do you have any feedback on the user interface? E.g., length of time too short or too long, instructions unclear.
+          </div>
+          <textarea
+            className="w-full border rounded-xl p-2 min-h-[100px]"
+            placeholder="Share any feedback about the interface, timing, instructions, etc."
+            value={q6}
+            onChange={(e) => setQ6(e.target.value)}
+          />
+        </label>
       </div>
     </Shell>
   );
@@ -2053,15 +1815,15 @@ const StudyApp: React.FC = () => {
   const [meta, setMeta] = useState<SessionMeta | null>(null);
   const [blocked, setBlocked] = useState<string | null>(null); // Track if participant is blocked
   const [deviceIncompatible, setDeviceIncompatible] = useState<string | null>(null); // Track device compatibility
-  const [brainstorm, setBrainstorm] = useState("");
   const [finalText, setFinalText] = useState("");
   const [aiTranscript, setAiTranscript] = useState<{role:"user"|"assistant"; content:string}[]>([]);
   const [attentionMeta, setAttentionMeta] = useState<any>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [totalViolations, setTotalViolations] = useState(0); // Track fullscreen violations
+  const [checkingAI, setCheckingAI] = useState(false);
 
-  // Attention tracking for brainstorm (step 3) and editor (step 4)
-  const attn = useWritingAttention(step === 3 || step === 4, {
+  // Attention tracking for editor (step 4)
+  const attn = useWritingAttention(step === 4, {
     graceMs: 5000,
     halfLifeMs: 20000,
     nudgeThreshold: 0.5,
@@ -2161,6 +1923,41 @@ const StudyApp: React.FC = () => {
     init();
   }, []);
 
+  const proceedToWriting = async () => {
+    if (!meta) return;
+
+    // SELF groups do not need the AI tool
+    if (!meta.group.startsWith("AI")) {
+      setStep(4);
+      return;
+    }
+
+    setCheckingAI(true);
+    console.log("🔎 Checking AI availability before writing phase...");
+    const result = await checkAIAvailable();
+    setCheckingAI(false);
+
+    if (!result.ok) {
+      console.error("❌ AI preflight failed:", result.error);
+      // End the session so they cannot re-enter the writing phase later
+      if (sessionId && supabase && supabase.from) {
+        try {
+          await supabase
+            .from("sessions")
+            .update({ finished_at: new Date().toISOString() })
+            .eq("id", sessionId);
+        } catch (error) {
+          console.error("Failed to mark session finished after AI outage:", error);
+        }
+      }
+      setBlocked("ai_unavailable");
+      return;
+    }
+
+    console.log("✅ AI preflight OK");
+    setStep(4);
+  };
+
   const onFinishSurvey = async (survey: any) => {
     if (!meta) return;
     
@@ -2191,7 +1988,7 @@ const StudyApp: React.FC = () => {
         if (supabase && supabase.from) {
           const submissionResult = await supabase.from('submissions').insert({
             session_id: sessionId,
-            brainstorm_text: brainstorm, // This is now a JSON string with structured brainstorm data
+            brainstorm_text: "",
             final_text: finalText,
             word_count: wordCount,
             attention_meta: attentionMeta,   // include finalStrike etc.
@@ -2230,7 +2027,6 @@ const StudyApp: React.FC = () => {
     const payload = {
       meta,
         sessionId, // Include Supabase session ID
-      brainstorm,
       finalText,
       aiTranscript,
       survey,
@@ -2268,6 +2064,7 @@ const StudyApp: React.FC = () => {
       blocked === 'supabase_error' ? 'Configuration Error' :
       blocked === 'initialization_error' ? 'System Error' :
       blocked === 'already_started' ? 'Session Already Started' :
+      blocked === 'ai_unavailable' ? 'Technical Issue' :
       'Already Participated'
     }>
       <div className="prose max-w-none">
@@ -2335,6 +2132,22 @@ const StudyApp: React.FC = () => {
             <div className="mt-6 p-4 bg-blue-50 rounded-lg">
               <p className="text-sm font-semibold">If you believe this is an error:</p>
               <p className="text-sm">Please contact the researcher with your Prolific ID.</p>
+            </div>
+          </>
+        ) : blocked === 'ai_unavailable' ? (
+          <>
+            <h2 className="text-xl font-semibold text-amber-700">We&apos;re sorry — the AI tool is unavailable</h2>
+            <p className="text-gray-800">
+              This study requires a working in-app AI assistant. We verified the AI tool before your writing task and it is not currently responding, so we cannot continue this session.
+            </p>
+            <p className="text-gray-700 mt-3">
+              This is a technical issue on our side, not something you did wrong. You will still receive <span className="font-semibold">partial compensation (50 cents)</span> for your time.
+            </p>
+            <div className="mt-4 p-4 bg-amber-50 border border-amber-300 rounded-lg">
+              <p className="font-semibold text-amber-900 mb-2">What to do next:</p>
+              <p className="text-sm text-amber-900">
+                Please <a href={`https://app.prolific.com/submissions/complete?cc=C5YJTVF5`} className="text-blue-600 underline font-semibold">click this link</a> to return to Prolific. Alternatively, copy and paste this code: <span className="font-mono font-bold">C5YJTVF5</span>.
+              </p>
             </div>
           </>
         ) : (
@@ -2426,6 +2239,17 @@ const StudyApp: React.FC = () => {
   
   if (!meta) return <div className="p-6 text-gray-500">Loading…</div>;
 
+  if (checkingAI) {
+    return (
+      <Shell title="Preparing writing task">
+        <div className="prose max-w-none text-center py-8">
+          <p className="text-lg font-semibold mb-2">Verifying the AI assistant…</p>
+          <p className="text-gray-600">This usually takes a few seconds. Please wait.</p>
+        </div>
+      </Shell>
+    );
+  }
+
   if ((step as any) === 4.1) return CompletionScreen;
 
   return (
@@ -2448,67 +2272,9 @@ const StudyApp: React.FC = () => {
             console.log("Violation", n);
             setTotalViolations(n);
           }}>
-          <PromptView meta={meta} onNext={() => setStep(3)} />
+          <PromptView meta={meta} onNext={() => { void proceedToWriting(); }} />
         </ComplianceGate>
       )}
-      {/* {step === 3 && <BrainstormView meta={meta} value={brainstorm} setValue={setBrainstorm} onNext={()=> setStep(4)} />}
-      {step === 4 && (
-        <EditorView meta={meta} brainstorm={brainstorm} onNext={(t, a)=>{ setFinalText(t); setAiTranscript(a); setStep(5); }} />
-      )}
-      {step === 5 && <SurveyView meta={meta} onSubmit={onFinishSurvey} />} */}
-
-{step === 3 && (
-  <ComplianceGate 
-    initialViolations={totalViolations}
-    onViolation={(n) => {
-      console.log("Violation", n);
-      setTotalViolations(n);
-    }}>
-    {/* Attention warnings for brainstorm phase */}
-    {attn.showFinalWarning && !attn.finalStrike && (
-      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-orange-500 text-white px-6 py-3 rounded-lg shadow-lg text-center max-w-md">
-        <div className="font-bold">⚠️ Final Warning</div>
-        <div className="text-sm">We need your full attention. Please stay focused or your session may be invalidated.</div>
-      </div>
-    )}
-    
-    {attn.showNudge && !attn.showFinalWarning && !attn.finalStrike && (
-      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-40 bg-black text-white px-6 py-4 rounded-lg shadow-lg text-center">
-        <div className="text-base font-semibold mb-1">👋 Still with us?</div>
-        <div className="text-sm">A quick keystroke or scroll helps maintain your attention score.</div>
-      </div>
-    )}
-
-    {/* Development mode attention score display */}
-    {DEV_MODE && (
-      <div className="fixed bottom-4 right-4 z-50 bg-gray-900 text-white p-3 rounded-lg text-sm font-mono shadow-lg">
-        <div className="text-xs text-gray-300 mb-1">Attention Score (Dev Mode)</div>
-        <div className="flex items-center gap-2">
-          <div className="w-20 h-2 bg-gray-700 rounded-full overflow-hidden">
-            <div 
-              className={`h-full transition-all duration-300 ${
-                attn.score > 0.7 ? 'bg-green-500' : 
-                attn.score > 0.5 ? 'bg-yellow-500' : 
-                attn.score > 0.35 ? 'bg-orange-500' : 'bg-red-500'
-              }`}
-              style={{ width: `${attn.score * 100}%` }}
-            />
-          </div>
-          <span className="text-xs">{(attn.score * 100).toFixed(0)}%</span>
-        </div>
-        <div className="text-xs text-gray-400 mt-1">
-          Nudges: {attn.nudges} | Worst: {(attn.worstScore * 100).toFixed(0)}%
-          {attn.showFinalWarning && <span className="text-orange-400"> | FINAL WARNING</span>}
-          {attn.finalStrike && <span className="text-red-400"> | STRIKE</span>}
-        </div>
-      </div>
-    )}
-    
-    <BrainstormView meta={meta} value={brainstorm} setValue={setBrainstorm} sessionId={sessionId} onNext={()=> setStep(4)} />
-  </ComplianceGate>
-)}
-
-
 
 {step === 4 && (
   <ComplianceGate 
@@ -2562,7 +2328,6 @@ const StudyApp: React.FC = () => {
     {/* Your existing EditorView */}
     <EditorView
       meta={meta}
-      brainstorm={brainstorm}
       sessionId={sessionId}
       onNext={(t, a) => {
         // record attention status in your payload

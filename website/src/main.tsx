@@ -19,10 +19,14 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
+import AppTask2 from './AppTask2.tsx'
 import './index.css'
+
+const task = new URLSearchParams(window.location.search).get('task')
+const Root = task === '2' ? AppTask2 : App
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <Root />
   </React.StrictMode>,
 )
