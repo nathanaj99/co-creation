@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from "react";
 import { ComplianceGate } from "./ComplianceGate";
 import { useWritingAttention } from "./useWritingAttention"; 
 import { supabase } from './lib/supabase';
-import miniProjectorImg from './mini_projector.webp';
 import cameraImg from './digital_camera.jpg';
 
 /*
