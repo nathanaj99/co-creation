@@ -3,7 +3,7 @@ import { ComplianceGate } from "./ComplianceGate";
 import { useWritingAttention } from "./useWritingAttention"; 
 import { supabase } from './lib/supabase';
 import miniProjectorImg from './mini_projector.webp';
-
+import cameraImg from './digital_camera.jpg';
 
 /*
   Prolific User Study Skeleton (TypeScript/React, single-file)
@@ -34,7 +34,7 @@ const GRACE_MAX_WORDS = 125;
 const SNAPSHOT_INTERVAL_MS = 5000; // how often to snapshot editor/chat text (ms)
 
 // Writing-phase timing (seconds). Change these; UI copy derives from them.
-const TOTAL_TIME_SEC = DEV_MODE ? 30 : 7 * 60; // allotted writing time
+const TOTAL_TIME_SEC = DEV_MODE ? 30 : 9 * 60; // allotted writing time
 const MIN_TIME_REQUIRED_SEC = DEV_MODE ? 15 : 3 * 60; // must write at least this long before submit unlocks
 const GRACE_PERIOD_SEC = DEV_MODE ? 30 : 1 * 60; // extra time if word count invalid when clock hits 0
 const READ_WAIT_SEC = DEV_MODE ? 0 : 20; // Instructions / Prompt "continue" unlock delay
@@ -43,7 +43,25 @@ const WORD_COUNT_WARN_AT_SEC = [2 * 60] as const; // warn if word count still in
 const TIMER_WARN_YELLOW_SEC = 3 * 60; // timer turns yellow at or below this remaining
 const TIMER_WARN_RED_SEC = 1 * 60; // timer turns red at or below this remaining
 
-const OPENAI_MODEL = "gpt-5-mini";
+const OPENAI_MODEL = "gpt-4o-mini";
+// Used only for reasoning models (o-series / gpt-5*). gpt-4o-mini rejects this param.
+const OPENAI_REASONING_EFFORT = "low";
+
+function modelSupportsReasoningEffort(model: string): boolean {
+  return /^(o\d|gpt-5)/i.test(model);
+}
+
+function buildOpenAIChatBody(messages: { role: string; content: string }[], extras: Record<string, unknown> = {}) {
+  const body: Record<string, unknown> = {
+    model: OPENAI_MODEL,
+    messages,
+    ...extras,
+  };
+  if (modelSupportsReasoningEffort(OPENAI_MODEL)) {
+    body.reasoning_effort = OPENAI_REASONING_EFFORT;
+  }
+  return body;
+}
 
 function formatDuration(seconds: number): string {
   if (seconds < 60) {
@@ -60,7 +78,7 @@ function formatDuration(seconds: number): string {
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
 // Temporarily exclude AI-CONV to balance group sizes
-const GROUPS: GroupKey[] = ["AI-CONV"];
+const GROUPS: GroupKey[] = ["AI-DIV", "AI-CONV"];
 // const GROUPS: GroupKey[] = ["AI-DIV", "AI-CONV", "SELF-DIV", "SELF-CONV"]; // Full randomization
 
 // ---- Utilities ----
@@ -210,10 +228,12 @@ async function checkAIAvailable(): Promise<{ ok: boolean; error?: string }> {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        messages: [{ role: "user", content: "Reply with exactly the word OK." }],
-      }),
+      body: JSON.stringify(
+        buildOpenAIChatBody(
+          [{ role: "user", content: "Reply with exactly the word OK." }],
+          { max_tokens: 5 }
+        )
+      ),
       signal: controller.signal,
     });
     clearTimeout(timeout);
@@ -651,11 +671,13 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
   const sharedIntro = (
     <>
       <p className="text-lg mb-4 font-semibold">You work for a company that is preparing to launch a new consumer product.</p>
-      <p className="mb-3">Your task is to write a short blurb for a product pitch. In the next window, you will be given factual information about the product. Here are your requirements:</p>
+      <p className="mb-3">
+      Your task is to write a short product pitch (product details will be in the next window). Here are your requirements:</p>
       <ul className="list-disc text-left mx-auto mb-4 max-w-2xl space-y-2 pl-6">
-        <li>Write a {MIN_WORDS}-{MAX_WORDS} word product description for a general audience</li>
-        <li>The description must remain consistent with the facts provided</li>
-        <li>You may frame or present the product how you like, including a product name, tagline, or illustrative scenarios where the product will be used.</li>
+        <li>The company will use the pitch to decide how to position the product in the market, including marketing materials and sales pitches.</li>
+        <li>If it helps you write a more compelling product pitch, you may choose the target audience, product name, how the product should be positioned, illustrative uses, etc.</li>
+        <li>You do NOT need to use all the facts provided about the product.</li>
+        <li>The text should be within {MIN_WORDS}-{MAX_WORDS} words.</li>
       </ul>
     </>
   );
@@ -664,7 +686,8 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
     ? (
       <>
         {sharedIntro}
-        <p className="mb-2">In order to attract customers, you need to think as creatively as possible and find a distinctive way to present the product.</p>
+        <hr className="my-6 border-t-2 border-gray-300" />
+        <p className="mb-2">In order to stand out from competing firms, you need to think as creatively as possible and find a distinctive way to present the product.</p>
         <p className="mt-4 text-red-600">Your <u>bonus</u> will be determined based on the <span className="font-bold">originality and uniqueness</span> of your product pitch.</p>
 
         <div className="my-6 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl text-left">
@@ -713,7 +736,9 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
     : (
       <>
         {sharedIntro}
-        <p className="mt-4 text-red-600">Your <u>bonus</u> will be determined based on the <span className="font-bold">technical quality</span> of your product pitch.</p>
+        <hr className="my-6 border-t-2 border-gray-300" />
+        <p className="mb-2">Your company wants a clear, polished, and persuasive description that communicates what the product is and why it is useful.</p>
+        <p className="mt-4 text-red-600">In other words, your <u>bonus</u> will be determined based on the <span className="font-bold">technical quality</span> of your product pitch.</p>
 
         <div className="my-6 p-4 bg-blue-50 border-2 border-blue-300 rounded-xl">
           <h3 className="font-bold text-blue-900 mb-3 text-base">Grading rubric</h3>
@@ -846,7 +871,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
                       checked={selectedOption === (isDiv ? "grade" : "originality")}
                       onChange={(e) => setSelectedOption(e.target.value)}
                     />
-                    {isDiv ? "The grade I receive" : "Originality and uniqueness"}
+                    {isDiv ? "Technical quality" : "Originality and uniqueness"}
                   </label>
                   <label className="flex items-center gap-2">
                     <input
@@ -856,7 +881,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
                       checked={selectedOption === (isDiv ? "originality" : "grade")}
                       onChange={(e) => setSelectedOption(e.target.value)}
                     />
-                    {isDiv ? "Originality and uniqueness": "The grade I receive"}
+                    {isDiv ? "Originality and uniqueness": "Technical quality"}
                   </label>
                 </div>
               </div>
@@ -940,9 +965,6 @@ const AIChatPanel: React.FC<{
         </p>
       </div>
       <div ref={chatContainerRef} className="border rounded-xl p-3 overflow-y-auto space-y-3 max-h-[800px]">
-        {messages.length===0 && (
-          <div className="text-sm text-gray-500">Ask the AI how to frame the pitch, or request a first draft.</div>
-        )}
         {messages.map((m, i)=> (
           <div key={i} className={"p-2 rounded-lg " + (m.role==="assistant"?"bg-gray-100":"bg-gray-50 border")}> 
             <div className="text-xs uppercase tracking-wide opacity-60">{m.role}</div>
@@ -1242,26 +1264,19 @@ const EditorView: React.FC<{
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${OPENAI_API_KEY}`
         },
-        body: JSON.stringify({
-          model: OPENAI_MODEL,
-          messages: [
+        body: JSON.stringify(
+          buildOpenAIChatBody([
             {
               role: 'system',
-              content: `Role and Objective:
-- Serve as a helpful assistant helping the user write a short product pitch.
+              content: `Role and Objective: Serve as a helpful assistant helping the user write a short product pitch.
 
-The AI already has the following context. Do not ask the user to repeat it.
-
-Product:
-- Portable mini projector
-- Product description: a compact consumer projector designed for everyday use
+Product: Digital camera
 
 Product facts / features (do not invent new features, prices, or performance claims):
-- Handheld/portable
-- 3-hour battery
-- Connects to phone/laptop
-- Built-in speaker
-- Projects up to 100 inches
+- Comes in black, silver, blue, and pink
+- 2-hour battery life
+- 5x optical zoom
+- 30 frames per second (fps) video recording
 
 Constraints:
 - The pitch must be ${MIN_WORDS}-${MAX_WORDS} words
@@ -1270,16 +1285,14 @@ Constraints:
 
 Instructions:
 - Follow the user's requests: first draft, edits, alternative framings, tone changes, etc.
-- The user will mainly provide guidance on how to frame the pitch (audience, angle, voice, tagline, scenario). Use that guidance together with the product facts above.
+- The user will mainly provide guidance on how to frame the pitch (audience, angle, voice, tagline, scenario).
 - Keep the output within ${MIN_WORDS}-${MAX_WORDS} words unless the user is only asking for ideas or feedback.
-
-Verbosity and Reasoning Effort:
-- Keep guidance and explanations brief. Set reasoning_effort = low.`
+- Keep guidance and explanations brief.`
             },
             ...aiMessages.map(m => ({ role: m.role, content: m.content })),
             { role: 'user', content: message }
-          ]
-        })
+          ])
+        )
       });
       
       if (!response.ok) {
@@ -1537,19 +1550,18 @@ Verbosity and Reasoning Effort:
             <h3 className="font-bold text-blue-900 mb-3 text-base">Product information</h3>
             <div className="flex flex-col sm:flex-row gap-4 items-start">
               <img
-                src={miniProjectorImg}
+                src={cameraImg}
                 alt="Portable mini projector"
                 className="w-full sm:w-48 h-auto rounded-lg border border-blue-200 bg-white object-contain"
               />
               <div>
-                <p className="font-semibold text-blue-900 mb-2">Portable mini projector</p>
+                <p className="font-semibold text-blue-900 mb-2">Digital camera</p>
                 <p className="text-sm text-blue-900 mb-1">Product features:</p>
                 <ul className="list-disc pl-5 space-y-1 text-sm text-blue-800">
-                  <li>Handheld/portable</li>
-                  <li>3-hour battery</li>
-                  <li>Connects to phone/laptop</li>
-                  <li>Built-in speaker</li>
-                  <li>Projects up to 100 inches</li>
+                  <li>Comes in black, silver, blue, and pink</li>
+                  <li>2-hour battery life</li>
+                  <li>5x optical zoom</li>
+                  <li>30 frames per second (fps) video recording</li>
                 </ul>
               </div>
             </div>
@@ -1558,8 +1570,9 @@ Verbosity and Reasoning Effort:
           <div className="mb-6 p-4 bg-amber-50 border-2 border-amber-300 rounded-xl">
             <h3 className="font-bold text-amber-900 mb-2 text-base">Your task</h3>
             <ul className="list-disc pl-5 space-y-1 text-sm text-amber-900">
-              <li>Write a <span className="font-bold">{MIN_WORDS}–{MAX_WORDS} word</span> blurb about the product.</li>
-              <li>You have up to <span className="font-bold">{formatDuration(TOTAL_TIME)}</span>.</li>
+              <li>Write a <span className="font-bold">{MIN_WORDS}–{MAX_WORDS} word</span> pitch that positions the product in the market.</li>
+              <li>If it helps you write a more compelling product pitch, you may choose the target audience, product name, how the product should be positioned, illustrative uses, etc.</li>
+              <li>You do NOT need to use all the facts provided about the product.</li>
               <li>
                 Your bonus is determined entirely based on{" "}
                 {isDiv
