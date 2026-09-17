@@ -1633,7 +1633,6 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
   const [q3, setQ3] = useState("");
   const [q4Items, setQ4Items] = useState<string[]>(["", ""]); // Start with 2 empty items
   const [q5, setQ5] = useState(""); // AI strategy question (only for AI groups)
-  const [q6, setQ6] = useState(""); // Open-ended UI / pilot feedback
   
   const addQ4Item = () => {
     setQ4Items([...q4Items, ""]);
@@ -1653,7 +1652,7 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
 
   const hasQ4Response = q4Items.some(item => item.trim().length > 0);
   const isAIGroup = meta.group.startsWith("AI");
-  const canSubmit = q1 && q2 && q3 && hasQ4Response && q6.trim().length > 0 && (!isAIGroup || q5.trim().length > 0);
+  const canSubmit = q1 && q2 && q3 && hasQ4Response && (!isAIGroup || q5.trim().length > 0);
 
   return (
     <Shell
@@ -1671,7 +1670,7 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
                 ? 'bg-black text-white' 
                 : 'bg-gray-300 text-gray-600 cursor-not-allowed'
             }`}
-            onClick={()=> onSubmit({ q1, q2, q3, q4: q4Items, q5: isAIGroup ? q5 : null, q6 })}
+            onClick={()=> onSubmit({ q1, q2, q3, q4: q4Items, q5: isAIGroup ? q5 : null })}
             disabled={!canSubmit}
           >
           Submit & Finish
@@ -1762,18 +1761,6 @@ const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }
             />
         </label>
         )}
-
-        <label className="block">
-          <div className="mb-1 font-medium">
-            This was a pilot study to study how people write (with or without AI). Do you have any feedback on the user interface? E.g., length of time too short or too long, instructions unclear.
-          </div>
-          <textarea
-            className="w-full border rounded-xl p-2 min-h-[100px]"
-            placeholder="Share any feedback about the interface, timing, instructions, etc."
-            value={q6}
-            onChange={(e) => setQ6(e.target.value)}
-          />
-        </label>
       </div>
     </Shell>
   );
